@@ -1,0 +1,142 @@
+import type {
+  IntentType,
+  ProcessingStatus,
+  SlackSourceType,
+} from 'src/constants/slack-intake';
+
+export type EntityKind =
+  | 'company'
+  | 'person'
+  | 'opportunity'
+  | 'solution'
+  | 'companyRelationship'
+  | 'opportunityStakeholder'
+  | 'opportunitySolution'
+  | 'note'
+  | 'task';
+
+export type EntityOperation = 'create' | 'update';
+
+export type EntityHints = {
+  companies: string[];
+  people: string[];
+  opportunities: string[];
+  solutions: string[];
+};
+
+export type QueryCategory =
+  | 'MONTHLY_NEW'
+  | 'OPPORTUNITY_STATUS'
+  | 'RISK_REVIEW'
+  | 'PIPELINE_SUMMARY'
+  | 'RECORD_LOOKUP'
+  | 'GENERAL';
+
+export type SlackIntentClassification = {
+  intentType: IntentType;
+  confidence: number;
+  summary: string;
+  queryCategory: QueryCategory;
+  entityHints: EntityHints;
+};
+
+export type CrmActionRecord = {
+  kind: EntityKind;
+  operation: EntityOperation;
+  lookup?: Record<string, string>;
+  data: Record<string, unknown>;
+};
+
+export type CrmWriteDraft = {
+  summary: string;
+  confidence: number;
+  sourceText: string;
+  actions: CrmActionRecord[];
+  warnings: string[];
+};
+
+export type SlackBlock = Record<string, unknown>;
+
+export type SlackReply = {
+  text: string;
+  blocks?: SlackBlock[];
+};
+
+export type SlackRequestRecord = {
+  id: string;
+  name: string | null;
+  slackTeamId: string | null;
+  slackChannelId: string | null;
+  slackThreadTs: string | null;
+  slackMessageTs: string | null;
+  slackUserId: string | null;
+  sourceType: SlackSourceType | null;
+  slackResponseUrl: string | null;
+  rawText: string | null;
+  normalizedText: string | null;
+  intentType: IntentType | null;
+  processingStatus: ProcessingStatus | null;
+  confidence: number | null;
+  draftJson: Record<string, unknown> | null;
+  resultJson: Record<string, unknown> | null;
+  errorMessage: string | null;
+  dedupeKey: string | null;
+  approvedByWorkspaceMemberId: string | null;
+  receivedAt: string | null;
+  lastProcessedAt: string | null;
+};
+
+export type BasicCompanyRecord = {
+  id: string;
+  name: string | null;
+  createdAt?: string | null;
+  accountSegment?: string | null;
+  businessUnit?: string | null;
+  companyStatus?: string | null;
+};
+
+export type BasicPersonRecord = {
+  id: string;
+  fullName: string;
+  createdAt?: string | null;
+  primaryEmail?: string | null;
+  jobTitle?: string | null;
+  contactRoleType?: string | null;
+  companyName?: string | null;
+};
+
+export type BasicOpportunityRecord = {
+  id: string;
+  name: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  stage?: string | null;
+  closeDate?: string | null;
+  companyName?: string | null;
+  primaryVendorCompanyName?: string | null;
+  primaryPartnerCompanyName?: string | null;
+  pointOfContactName?: string | null;
+  amountMicros?: number | null;
+  currencyCode?: string | null;
+};
+
+export type BasicTaskRecord = {
+  id: string;
+  title: string | null;
+  createdAt?: string | null;
+  status?: string | null;
+};
+
+export type BasicNoteRecord = {
+  id: string;
+  title: string | null;
+  createdAt?: string | null;
+  markdown?: string | null;
+};
+
+export type ApplyDraftResult = {
+  created: Array<{ kind: EntityKind; id: string }>;
+  updated: Array<{ kind: EntityKind; id: string }>;
+  skipped: string[];
+  errors: string[];
+};

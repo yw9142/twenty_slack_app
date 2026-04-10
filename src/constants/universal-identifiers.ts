@@ -1,4 +1,75 @@
 export const APP_DISPLAY_NAME = '다우 Slack Agent';
-export const APP_DESCRIPTION = 'Slack-driven CRM automation app for Daou Data on Twenty';
-export const APPLICATION_UNIVERSAL_IDENTIFIER = '649017b3-dcf2-40f5-ad10-31e849e621ea';
-export const DEFAULT_ROLE_UNIVERSAL_IDENTIFIER = 'b9cc5124-7e61-4020-8ab6-084d5ad060a7';
+export const APP_DESCRIPTION =
+  'Slack-driven CRM automation app for Daou Data on Twenty';
+export const APPLICATION_UNIVERSAL_IDENTIFIER =
+  '649017b3-dcf2-40f5-ad10-31e849e621ea';
+export const DEFAULT_ROLE_UNIVERSAL_IDENTIFIER =
+  'b9cc5124-7e61-4020-8ab6-084d5ad060a7';
+
+export const SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER =
+  'b23ecd32-8427-4cf5-8b05-90c44b069a3f';
+
+export const SLACK_REQUEST_VIEW_UNIVERSAL_IDENTIFIER =
+  '7a71014f-b8ec-41e7-a507-04f208ee065d';
+export const SLACK_APPROVAL_VIEW_UNIVERSAL_IDENTIFIER =
+  '786a8d6e-1ec4-4a4d-939c-7255a5986e9c';
+export const SLACK_ERROR_VIEW_UNIVERSAL_IDENTIFIER =
+  'fd6b565c-c0a4-4739-941e-9de0c10a4d68';
+export const SLACK_QUERY_VIEW_UNIVERSAL_IDENTIFIER =
+  'd95bbdd8-ccc9-4d4d-a5ac-ce7005b3bf57';
+export const SLACK_WRITE_VIEW_UNIVERSAL_IDENTIFIER =
+  'ca398d45-1c53-4090-a314-33067d8b0bbe';
+export const SLACK_REQUEST_NAVIGATION_UNIVERSAL_IDENTIFIER =
+  '09972ffc-b0c5-42ba-9c2c-27b30033fd2d';
+
+export const ROUTE_EVENT_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '243b262d-6bc4-41fd-87c5-322d8757091c';
+export const ROUTE_COMMAND_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '41ac0114-26d3-4d91-a7d6-e236a1522cb9';
+export const ROUTE_INTERACTIVITY_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '16eced3f-5300-4490-9887-43484658e003';
+export const PROCESS_INTAKE_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '81fef8d0-21e8-4073-a099-ed2429618ff7';
+export const ANSWER_QUERY_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '38e3cb75-9efb-46d4-b2a2-f77301f7b06a';
+export const BUILD_DRAFT_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '0ae6fa4a-a30a-4680-bab5-ce1ad1bd7cd4';
+export const APPLY_DRAFT_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '91f11976-c0cd-4332-88da-6ea5e3896f8f';
+export const POST_SLACK_MESSAGE_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '20ffaed8-8515-4074-a2cd-7573915ee644';
+export const NOTIFY_ADMIN_FUNCTION_UNIVERSAL_IDENTIFIER =
+  'ee2dccb4-6a08-4cfe-96fe-81b6e77942ef';
+export const DAILY_OPPORTUNITY_HEALTH_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '75956d28-9ac3-4dbc-9d8e-1c6d123f218e';
+export const NOTE_STRUCTURING_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '9e68dcfa-c14d-472c-90ec-39910389ce23';
+export const OPPORTUNITY_STAGE_AUTOMATION_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '60a602bf-67c6-4c69-b9b0-b48e9df32c52';
+export const WEEKLY_BRIEFING_FUNCTION_UNIVERSAL_IDENTIFIER =
+  'c0317cd2-1ae0-43a4-aa3a-b4bf406c6bc0';
+export const MONTHLY_UPSELL_FUNCTION_UNIVERSAL_IDENTIFIER =
+  'db7c834e-7614-4319-a3e6-2f940945c944';
+
+export const SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS = {
+  name: 'd6b8f603-12c2-4c09-b9f2-7d46cf8d1e1b',
+  slackTeamId: '7940dbf9-b655-496a-bd15-6764b71c7c44',
+  slackChannelId: 'aab35524-22e6-4d1d-b70c-b017026f6b0f',
+  slackThreadTs: 'a2dc3537-9a9c-48de-8fb0-f6ea9bc93783',
+  slackMessageTs: '1ebb1c60-d0fe-4b94-a727-67bbbbfe7e56',
+  slackUserId: 'fbac69d8-d7ef-4ecc-b89a-2b8ee4084beb',
+  sourceType: '0fde1d15-64fd-493c-ab5e-a930d29f469b',
+  slackResponseUrl: 'bc8d8040-0238-43c7-8738-4a6d33c7b19f',
+  rawText: '65193bda-8e9b-4993-a9f8-cbfea0d53e05',
+  normalizedText: '236ec83b-7da0-44a0-84ea-7d2e0348a5f9',
+  intentType: '320925fa-2a63-49ef-b409-f7a01d10a1a0',
+  processingStatus: '6edf1307-94f8-41eb-94dc-800773e975d1',
+  confidence: '799a79e7-cf8f-4650-b7b7-918f07cee933',
+  draftJson: '7313b2b9-70ec-4812-8bec-d7726a72e21c',
+  resultJson: 'a99abf32-8efc-4111-90ed-8aae58f4a282',
+  errorMessage: '34a32599-b00b-4b82-ac2b-80b9bcbe6fc3',
+  dedupeKey: 'b355ea2e-d0b5-4d98-85d2-9c972921d8af',
+  approvedByWorkspaceMemberId: '31437966-8ce2-4d7a-815d-362323e0746f',
+  receivedAt: 'aa64509e-e67b-40e3-80dd-7a6677dbad42',
+  lastProcessedAt: '9b03e6b8-7086-4a65-808d-d4e3f7b7466f',
+} as const;
