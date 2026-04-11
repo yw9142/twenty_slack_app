@@ -116,6 +116,45 @@ describe('intelligence fallbacks', () => {
     expect(result.detailLevel).toBe('DETAILED');
   });
 
+  it('should not infer THIS_MONTH without an explicit monthly timeframe phrase', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [
+          {
+            type: 'tool_use',
+            name: 'plan_crm_query',
+            input: {
+              intentType: 'QUERY',
+              confidence: 0.91,
+              summary: '잘못된 월간 분류',
+              queryCategory: 'MONTHLY_NEW',
+              detailLevel: 'DETAILED',
+              timeframe: 'THIS_MONTH',
+              focusEntity: 'OPPORTUNITY',
+              entityHints: {
+                companies: [],
+                people: [],
+                opportunities: [],
+                solutions: [],
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await classifySlackText(
+      '전체 신규영업기회 정리해서 알려줘. 요약하지말고 하나하나 상세하게 알려줘',
+    );
+
+    expect(result.timeframe).toBe('ALL_TIME');
+  });
+
   it('should build a safe fallback write draft with at least a note', async () => {
     const draft = await buildCrmWriteDraft(
       '미래금융 고객사 미팅했고 다음주에 Citrix VDI 제안서 보내야 해',
@@ -151,6 +190,27 @@ describe('intelligence fallbacks', () => {
     expect(opportunityAction?.data.companyName).toBe('A은행');
     expect(opportunityAction?.data.pointOfContactName).toBe('김민수');
     expect(String(opportunityAction?.data.name ?? '')).not.toContain('관련해서');
+  });
+
+  it('should extract richer meeting facts for crm write drafts', async () => {
+    const draft = await buildCrmWriteDraft(
+      '오늘 A은행 인프라팀 후속 미팅 완료. 기존에 검토 중이던 Nutanix VDI 전환 건 관련해서 고객 반응이 긍정적이었고, 담당자는 김민수 부장이다. 5월 말 POC 일정으로 내부 검토를 시작하기로 했고 현재 단계는 Discovery/PoC로 보는 게 맞다. 다음주 안에 아키텍처 초안과 예상 비용 범위를 달라고 요청받았다.',
+    );
+
+    const personAction = draft.actions.find((action) => action.kind === 'person');
+    const opportunityAction = draft.actions.find(
+      (action) => action.kind === 'opportunity',
+    );
+    const taskAction = draft.actions.find((action) => action.kind === 'task');
+
+    expect(personAction?.data.name).toBe('김민수');
+    expect(personAction?.data.jobTitle).toBe('부장');
+    expect(personAction?.data.companyName).toBe('A은행');
+    expect(opportunityAction?.data.primaryVendorCompanyName).toBe('Nutanix');
+    expect(opportunityAction?.data.stage).toBe('DISCOVERY_POC');
+    expect(opportunityAction?.data.closeDate).toBe('2026-05-31');
+    expect(taskAction?.data.title).toContain('아키텍처 초안');
+    expect(typeof taskAction?.data.dueAt).toBe('string');
   });
 
   it('should synthesize detailed CRM replies via Anthropic structured outputs', async () => {
@@ -339,5 +399,116 @@ describe('intelligence fallbacks', () => {
     expect(body?.system).toContain('## Matching Strategy');
     expect(body?.messages?.[0]?.content).toContain('<candidate_context>');
     expect(body?.messages?.[0]?.content).toContain('A은행 기존 VDI 전환');
+  });
+
+  it('should ground sparse ai write drafts with meeting facts and public enrichment', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    fetchWriteCandidateContext.mockResolvedValue({
+      companies: [],
+      people: [],
+      opportunities: [],
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                summary: '초안 요약',
+                confidence: 0.8,
+                sourceText: 'A은행 Nutanix 전환 기회',
+                actions: [
+                  {
+                    kind: 'company',
+                    operation: 'create',
+                    data: {
+                      name: 'A은행',
+                    },
+                  },
+                  {
+                    kind: 'opportunity',
+                    operation: 'create',
+                    data: {
+                      name: '신규 영업기회',
+                    },
+                  },
+                ],
+                warnings: [],
+                review: {
+                  overview: '초안',
+                  opinion: '초안',
+                  items: [],
+                },
+              }),
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                companies: [
+                  {
+                    name: 'A은행',
+                    domainName: 'https://www.abank.co.kr',
+                    linkedinLink: 'https://www.linkedin.com/company/abank',
+                    employees: 1200,
+                  },
+                ],
+                people: [
+                  {
+                    name: '김민수',
+                    companyName: 'A은행',
+                    jobTitle: '부장',
+                    linkedinLink: 'https://www.linkedin.com/in/minsu-kim',
+                    city: 'Seoul',
+                  },
+                ],
+              }),
+            },
+          ],
+        }),
+      });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const draft = await buildCrmWriteDraft(
+      '오늘 A은행 인프라팀 후속 미팅 완료. 기존에 검토 중이던 Nutanix VDI 전환 건 관련해서 고객 반응이 긍정적이었고, 담당자는 김민수 부장이다. 5월 말 POC 일정으로 내부 검토를 시작하기로 했고 현재 단계는 Discovery/PoC로 보는 게 맞다. 다음주 안에 아키텍처 초안과 예상 비용 범위를 달라고 요청받았다.',
+    );
+
+    const companyAction = draft.actions.find((action) => action.kind === 'company');
+    const personAction = draft.actions.find((action) => action.kind === 'person');
+    const opportunityAction = draft.actions.find(
+      (action) => action.kind === 'opportunity',
+    );
+    const taskAction = draft.actions.find((action) => action.kind === 'task');
+
+    expect(companyAction?.data.domainName).toEqual({
+      primaryLinkUrl: 'https://www.abank.co.kr',
+    });
+    expect(companyAction?.data.linkedinLink).toEqual({
+      primaryLinkUrl: 'https://www.linkedin.com/company/abank',
+    });
+    expect(companyAction?.data.employees).toBe(1200);
+    expect(personAction?.data.name).toBe('김민수');
+    expect(personAction?.data.jobTitle).toBe('부장');
+    expect(personAction?.data.linkedinLink).toEqual({
+      primaryLinkUrl: 'https://www.linkedin.com/in/minsu-kim',
+    });
+    expect(opportunityAction?.data.name).toBe('A은행 Nutanix VDI 전환');
+    expect(opportunityAction?.data.companyName).toBe('A은행');
+    expect(opportunityAction?.data.pointOfContactName).toBe('김민수');
+    expect(opportunityAction?.data.primaryVendorCompanyName).toBe('Nutanix');
+    expect(opportunityAction?.data.stage).toBe('DISCOVERY_POC');
+    expect(taskAction?.data.title).toContain('아키텍처 초안');
+    expect(draft.review?.items.length).toBeGreaterThan(0);
   });
 });

@@ -6,6 +6,9 @@ type CandidateCompany = {
   id: string;
   name: string;
   createdAt?: string | null;
+  domainName?: string | null;
+  linkedinLink?: string | null;
+  employees?: number | null;
 };
 
 type CandidatePerson = {
@@ -14,6 +17,8 @@ type CandidatePerson = {
   companyName?: string | null;
   jobTitle?: string | null;
   primaryEmail?: string | null;
+  linkedinLink?: string | null;
+  city?: string | null;
 };
 
 type CandidateOpportunity = {
@@ -23,6 +28,9 @@ type CandidateOpportunity = {
   pointOfContactName?: string | null;
   stage?: string | null;
   updatedAt?: string | null;
+  closeDate?: string | null;
+  primaryVendorCompanyName?: string | null;
+  primaryPartnerCompanyName?: string | null;
 };
 
 export type WriteCandidateContext = {
@@ -76,6 +84,13 @@ const fetchCandidateCompanies = async (): Promise<CandidateCompany[]> => {
           id: true,
           name: true,
           createdAt: true,
+          domainName: {
+            primaryLinkUrl: true,
+          },
+          linkedinLink: {
+            primaryLinkUrl: true,
+          },
+          employees: true,
         },
       },
     },
@@ -85,6 +100,22 @@ const fetchCandidateCompanies = async (): Promise<CandidateCompany[]> => {
     id: typeof record.id === 'string' ? record.id : '',
     name: typeof record.name === 'string' ? record.name : '',
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : null,
+    domainName:
+      record.domainName &&
+      typeof record.domainName === 'object' &&
+      typeof (record.domainName as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.domainName as { primaryLinkUrl?: string }).primaryLinkUrl ?? null)
+        : null,
+    linkedinLink:
+      record.linkedinLink &&
+      typeof record.linkedinLink === 'object' &&
+      typeof (record.linkedinLink as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.linkedinLink as { primaryLinkUrl?: string }).primaryLinkUrl ??
+          null)
+        : null,
+    employees: typeof record.employees === 'number' ? record.employees : null,
   }));
 };
 
@@ -104,6 +135,10 @@ const fetchCandidatePeople = async (): Promise<CandidatePerson[]> => {
             name: true,
           },
           jobTitle: true,
+          linkedinLink: {
+            primaryLinkUrl: true,
+          },
+          city: true,
           emails: {
             primaryEmail: true,
           },
@@ -126,6 +161,15 @@ const fetchCandidatePeople = async (): Promise<CandidatePerson[]> => {
         ? ((record.company as { name?: string }).name ?? null)
         : null,
     jobTitle: typeof record.jobTitle === 'string' ? record.jobTitle : null,
+    linkedinLink:
+      record.linkedinLink &&
+      typeof record.linkedinLink === 'object' &&
+      typeof (record.linkedinLink as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.linkedinLink as { primaryLinkUrl?: string }).primaryLinkUrl ??
+          null)
+        : null,
+    city: typeof record.city === 'string' ? record.city : null,
     primaryEmail:
       record.emails &&
       typeof record.emails === 'object' &&
@@ -146,6 +190,7 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
           name: true,
           updatedAt: true,
           stage: true,
+          closeDate: true,
           company: {
             name: true,
           },
@@ -154,6 +199,12 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
               firstName: true,
               lastName: true,
             },
+          },
+          primaryVendorCompany: {
+            name: true,
+          },
+          primaryPartnerCompany: {
+            name: true,
           },
         },
       },
@@ -165,6 +216,7 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
     name: typeof record.name === 'string' ? record.name : '',
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : null,
     stage: typeof record.stage === 'string' ? record.stage : null,
+    closeDate: typeof record.closeDate === 'string' ? record.closeDate : null,
     companyName:
       record.company &&
       typeof record.company === 'object' &&
@@ -178,6 +230,18 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
         ? toFullName(
             (record.pointOfContact as { name?: Record<string, unknown> }).name,
           ) || null
+        : null,
+    primaryVendorCompanyName:
+      record.primaryVendorCompany &&
+      typeof record.primaryVendorCompany === 'object' &&
+      typeof (record.primaryVendorCompany as { name?: unknown }).name === 'string'
+        ? ((record.primaryVendorCompany as { name?: string }).name ?? null)
+        : null,
+    primaryPartnerCompanyName:
+      record.primaryPartnerCompany &&
+      typeof record.primaryPartnerCompany === 'object' &&
+      typeof (record.primaryPartnerCompany as { name?: unknown }).name === 'string'
+        ? ((record.primaryPartnerCompany as { name?: string }).name ?? null)
         : null,
   }));
 };

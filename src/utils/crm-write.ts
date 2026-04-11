@@ -84,7 +84,37 @@ const HELPER_LOOKUP_FIELDS = [
   'pointOfContactName',
   'primaryVendorCompanyName',
   'primaryPartnerCompanyName',
+  'opportunityName',
 ] as const;
+
+const ACTION_PRIORITY: Record<EntityKind, number> = {
+  company: 10,
+  person: 20,
+  solution: 25,
+  opportunity: 30,
+  companyRelationship: 40,
+  opportunityStakeholder: 45,
+  opportunitySolution: 50,
+  note: 60,
+  task: 70,
+};
+
+type ResolvedEntityMaps = {
+  companyIdsByName: Map<string, string>;
+  personIdsByKey: Map<string, string>;
+  opportunityIdsByName: Map<string, string>;
+};
+
+const toNormalizedKey = (value: string | null | undefined): string =>
+  normalizeText(value);
+
+const toPersonLookupKey = ({
+  name,
+  companyName,
+}: {
+  name: string | null | undefined;
+  companyName?: string | null | undefined;
+}): string => `${toNormalizedKey(name)}::${toNormalizedKey(companyName)}`;
 
 const lookupCompanyIdByName = async (name: string): Promise<string | null> => {
   const companies = await fetchCompanies();
@@ -145,39 +175,59 @@ const lookupOpportunityByName = async (
 
 const hydrateCommonReferenceIds = async (
   data: Record<string, unknown>,
+  resolved?: ResolvedEntityMaps,
 ): Promise<Record<string, unknown>> => {
   const nextData = { ...data };
 
   if (typeof nextData.companyName === 'string' && !nextData.companyId) {
-    nextData.companyId = await lookupCompanyIdByName(nextData.companyName);
+    nextData.companyId =
+      resolved?.companyIdsByName.get(toNormalizedKey(nextData.companyName)) ??
+      (await lookupCompanyIdByName(nextData.companyName));
   }
 
   if (
     typeof nextData.primaryVendorCompanyName === 'string' &&
     !nextData.primaryVendorCompanyId
   ) {
-    nextData.primaryVendorCompanyId = await lookupCompanyIdByName(
-      nextData.primaryVendorCompanyName,
-    );
+    nextData.primaryVendorCompanyId =
+      resolved?.companyIdsByName.get(
+        toNormalizedKey(nextData.primaryVendorCompanyName),
+      ) ??
+      (await lookupCompanyIdByName(nextData.primaryVendorCompanyName));
   }
 
   if (
     typeof nextData.primaryPartnerCompanyName === 'string' &&
     !nextData.primaryPartnerCompanyId
   ) {
-    nextData.primaryPartnerCompanyId = await lookupCompanyIdByName(
-      nextData.primaryPartnerCompanyName,
-    );
+    nextData.primaryPartnerCompanyId =
+      resolved?.companyIdsByName.get(
+        toNormalizedKey(nextData.primaryPartnerCompanyName),
+      ) ??
+      (await lookupCompanyIdByName(nextData.primaryPartnerCompanyName));
   }
 
   if (typeof nextData.pointOfContactName === 'string' && !nextData.pointOfContactId) {
-    const person = await lookupPersonByReference({
-      fullName: nextData.pointOfContactName,
-      companyName:
-        typeof nextData.companyName === 'string' ? nextData.companyName : undefined,
-    });
+    const companyName =
+      typeof nextData.companyName === 'string' ? nextData.companyName : undefined;
 
-    nextData.pointOfContactId = person?.id ?? null;
+    nextData.pointOfContactId =
+      resolved?.personIdsByKey.get(
+        toPersonLookupKey({
+          name: nextData.pointOfContactName,
+          companyName,
+        }),
+      ) ??
+      resolved?.personIdsByKey.get(
+        toPersonLookupKey({
+          name: nextData.pointOfContactName,
+        }),
+      ) ??
+      (await lookupPersonByReference({
+        fullName: nextData.pointOfContactName,
+        companyName,
+      }))?.id ??
+      null;
   }
 
   return nextData;
@@ -186,8 +236,9 @@ const hydrateCommonReferenceIds = async (
 const normalizeEntityData = async (
   kind: EntityKind,
   data: Record<string, unknown>,
+  resolved?: ResolvedEntityMaps,
 ): Promise<Record<string, unknown>> => {
-  const nextData = await hydrateCommonReferenceIds(data);
+  const nextData = await hydrateCommonReferenceIds(data, resolved);
 
   for (const field of HELPER_LOOKUP_FIELDS) {
     delete nextData[field];
@@ -207,6 +258,26 @@ const normalizeEntityData = async (
         additionalEmails: [],
       };
       delete nextData.primaryEmail;
+    }
+
+    if (typeof nextData.linkedinLink === 'string') {
+      nextData.linkedinLink = {
+        primaryLinkUrl: nextData.linkedinLink,
+      };
+    }
+  }
+
+  if (kind === 'company') {
+    if (typeof nextData.domainName === 'string') {
+      nextData.domainName = {
+        primaryLinkUrl: nextData.domainName,
+      };
+    }
+
+    if (typeof nextData.linkedinLink === 'string') {
+      nextData.linkedinLink = {
+        primaryLinkUrl: nextData.linkedinLink,
+      };
     }
   }
 
@@ -272,13 +343,15 @@ const findRecordIdByLookup = async (
 const createRecord = async ({
   kind,
   data,
+  resolved,
 }: {
   kind: EntityKind;
   data: Record<string, unknown>;
+  resolved?: ResolvedEntityMaps;
 }): Promise<string> => {
   const client = createCoreClient();
   const config = ENTITY_CONFIG[kind];
-  const normalizedData = await normalizeEntityData(kind, data);
+  const normalizedData = await normalizeEntityData(kind, data, resolved);
   const mutationName = config.createMutation;
   const response = await client.mutation<Record<string, unknown>>({
     [mutationName]: {
@@ -307,14 +380,16 @@ const updateRecord = async ({
   kind,
   id,
   data,
+  resolved,
 }: {
   kind: EntityKind;
   id: string;
   data: Record<string, unknown>;
+  resolved?: ResolvedEntityMaps;
 }): Promise<string> => {
   const client = createCoreClient();
   const config = ENTITY_CONFIG[kind];
-  const normalizedData = await normalizeEntityData(kind, data);
+  const normalizedData = await normalizeEntityData(kind, data, resolved);
   const mutationName = config.updateMutation;
   const response = await client.mutation<Record<string, unknown>>({
     [mutationName]: {
@@ -338,6 +413,226 @@ const updateRecord = async ({
   }
 
   return updated.id;
+};
+
+const createResolvedEntityMaps = (): ResolvedEntityMaps => ({
+  companyIdsByName: new Map<string, string>(),
+  personIdsByKey: new Map<string, string>(),
+  opportunityIdsByName: new Map<string, string>(),
+});
+
+const rememberResolvedRecord = ({
+  resolved,
+  action,
+  id,
+}: {
+  resolved: ResolvedEntityMaps;
+  action: CrmActionRecord;
+  id: string;
+}): void => {
+  if (action.kind === 'company') {
+    const companyName = normalizeLookupValue(
+      typeof action.data.name === 'string' ? action.data.name : action.lookup?.name,
+    );
+
+    if (companyName) {
+      resolved.companyIdsByName.set(toNormalizedKey(companyName), id);
+    }
+
+    return;
+  }
+
+  if (action.kind === 'person') {
+    const personName = normalizeLookupValue(
+      typeof action.data.name === 'string' ? action.data.name : action.lookup?.name,
+    );
+    const companyName = normalizeLookupValue(
+      typeof action.data.companyName === 'string'
+        ? action.data.companyName
+        : action.lookup?.companyName,
+    );
+
+    if (personName) {
+      resolved.personIdsByKey.set(
+        toPersonLookupKey({ name: personName, companyName }),
+        id,
+      );
+      resolved.personIdsByKey.set(toPersonLookupKey({ name: personName }), id);
+    }
+
+    return;
+  }
+
+  if (action.kind === 'opportunity') {
+    const opportunityName = normalizeLookupValue(
+      typeof action.data.name === 'string' ? action.data.name : action.lookup?.name,
+    );
+
+    if (opportunityName) {
+      resolved.opportunityIdsByName.set(toNormalizedKey(opportunityName), id);
+    }
+  }
+};
+
+const resolveCompanyId = async ({
+  resolved,
+  data,
+}: {
+  resolved: ResolvedEntityMaps;
+  data: Record<string, unknown>;
+}): Promise<string | null> => {
+  if (typeof data.companyId === 'string' && data.companyId.length > 0) {
+    return data.companyId;
+  }
+
+  const companyName = normalizeLookupValue(data.companyName);
+
+  if (!companyName) {
+    return null;
+  }
+
+  return (
+    resolved.companyIdsByName.get(toNormalizedKey(companyName)) ??
+    (await lookupCompanyIdByName(companyName))
+  );
+};
+
+const resolvePersonId = async ({
+  resolved,
+  data,
+}: {
+  resolved: ResolvedEntityMaps;
+  data: Record<string, unknown>;
+}): Promise<string | null> => {
+  if (typeof data.pointOfContactId === 'string' && data.pointOfContactId.length > 0) {
+    return data.pointOfContactId;
+  }
+
+  const personName = normalizeLookupValue(data.pointOfContactName);
+
+  if (!personName) {
+    return null;
+  }
+
+  const companyName = normalizeLookupValue(data.companyName);
+
+  return (
+    resolved.personIdsByKey.get(
+      toPersonLookupKey({
+        name: personName,
+        companyName,
+      }),
+    ) ??
+    resolved.personIdsByKey.get(
+      toPersonLookupKey({
+        name: personName,
+      }),
+    ) ??
+    (await lookupPersonByReference({
+      fullName: personName,
+      companyName: companyName ?? undefined,
+    }))?.id ??
+    null
+  );
+};
+
+const resolveOpportunityId = async ({
+  resolved,
+  data,
+}: {
+  resolved: ResolvedEntityMaps;
+  data: Record<string, unknown>;
+}): Promise<string | null> => {
+  if (typeof data.opportunityId === 'string' && data.opportunityId.length > 0) {
+    return data.opportunityId;
+  }
+
+  const opportunityName = normalizeLookupValue(data.opportunityName);
+
+  if (!opportunityName) {
+    return null;
+  }
+
+  return (
+    resolved.opportunityIdsByName.get(toNormalizedKey(opportunityName)) ??
+    (await lookupOpportunityByName(opportunityName))?.id ??
+    null
+  );
+};
+
+const createTargetLink = async ({
+  mutationName,
+  data,
+}: {
+  mutationName: 'createNoteTarget' | 'createTaskTarget';
+  data: Record<string, unknown>;
+}): Promise<void> => {
+  const client = createCoreClient();
+
+  await client.mutation({
+    [mutationName]: {
+      __args: {
+        data,
+      },
+      id: true,
+    },
+  });
+};
+
+const createSupportingTargets = async ({
+  kind,
+  recordId,
+  data,
+  resolved,
+}: {
+  kind: 'note' | 'task';
+  recordId: string;
+  data: Record<string, unknown>;
+  resolved: ResolvedEntityMaps;
+}): Promise<void> => {
+  const companyId = await resolveCompanyId({
+    resolved,
+    data,
+  });
+  const personId = await resolvePersonId({
+    resolved,
+    data,
+  });
+  const opportunityId = await resolveOpportunityId({
+    resolved,
+    data,
+  });
+  const mutationName = kind === 'note' ? 'createNoteTarget' : 'createTaskTarget';
+  const idField = kind === 'note' ? 'noteId' : 'taskId';
+  const targetPayloads: Record<string, unknown>[] = [];
+
+  if (companyId) {
+    targetPayloads.push({
+      [idField]: recordId,
+      targetCompanyId: companyId,
+    });
+  }
+
+  if (personId) {
+    targetPayloads.push({
+      [idField]: recordId,
+      targetPersonId: personId,
+    });
+  }
+
+  if (opportunityId) {
+    targetPayloads.push({
+      [idField]: recordId,
+      targetOpportunityId: opportunityId,
+    });
+  }
+
+  for (const payload of targetPayloads) {
+    await createTargetLink({
+      mutationName,
+      data: payload,
+    });
+  }
 };
 
 export const createOperationalTask = async ({
@@ -365,8 +660,12 @@ export const applyApprovedDraft = async (
     skipped: [],
     errors: [],
   };
+  const resolved = createResolvedEntityMaps();
+  const orderedActions = [...draft.actions].sort(
+    (left, right) => ACTION_PRIORITY[left.kind] - ACTION_PRIORITY[right.kind],
+  );
 
-  for (const action of draft.actions) {
+  for (const action of orderedActions) {
     try {
       if (action.operation === 'update') {
         const recordId = await findRecordIdByLookup(action);
@@ -382,12 +681,28 @@ export const applyApprovedDraft = async (
           kind: action.kind,
           id: recordId,
           data: action.data,
+          resolved,
         });
 
         result.updated.push({
           kind: action.kind,
           id,
         });
+
+        rememberResolvedRecord({
+          resolved,
+          action,
+          id,
+        });
+
+        if (action.kind === 'note' || action.kind === 'task') {
+          await createSupportingTargets({
+            kind: action.kind,
+            recordId: id,
+            data: action.data,
+            resolved,
+          });
+        }
         continue;
       }
 
@@ -399,12 +714,28 @@ export const applyApprovedDraft = async (
             kind: action.kind,
             id: existingId,
             data: action.data,
+            resolved,
           });
 
           result.updated.push({
             kind: action.kind,
             id,
           });
+
+          rememberResolvedRecord({
+            resolved,
+            action,
+            id,
+          });
+
+          if (action.kind === 'note' || action.kind === 'task') {
+            await createSupportingTargets({
+              kind: action.kind,
+              recordId: id,
+              data: action.data,
+              resolved,
+            });
+          }
           continue;
         }
       }
@@ -412,12 +743,28 @@ export const applyApprovedDraft = async (
       const id = await createRecord({
         kind: action.kind,
         data: action.data,
+        resolved,
       });
 
       result.created.push({
         kind: action.kind,
         id,
       });
+
+      rememberResolvedRecord({
+        resolved,
+        action,
+        id,
+      });
+
+      if (action.kind === 'note' || action.kind === 'task') {
+        await createSupportingTargets({
+          kind: action.kind,
+          recordId: id,
+          data: action.data,
+          resolved,
+        });
+      }
     } catch (error) {
       result.errors.push(
         `${action.kind} ${action.operation} failed: ${error instanceof Error ? error.message : String(error)}`,

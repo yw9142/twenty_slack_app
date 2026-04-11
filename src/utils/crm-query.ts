@@ -9,7 +9,7 @@ import type {
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
 import { synthesizeCrmQueryReply } from 'src/utils/intelligence';
-import { normalizeText } from 'src/utils/strings';
+import { normalizeText, truncate } from 'src/utils/strings';
 
 const THIS_MONTH_PREFIX = new Date().toISOString().slice(0, 7);
 
@@ -20,6 +20,13 @@ const companyRichSelection = {
   accountSegment: true,
   businessUnit: true,
   companyStatus: true,
+  domainName: {
+    primaryLinkUrl: true,
+  },
+  linkedinLink: {
+    primaryLinkUrl: true,
+  },
+  employees: true,
 } as const;
 
 const companyBasicSelection = {
@@ -40,6 +47,10 @@ const personRichSelection = {
   },
   jobTitle: true,
   contactRoleType: true,
+  linkedinLink: {
+    primaryLinkUrl: true,
+  },
+  city: true,
   company: {
     name: true,
   },
@@ -128,7 +139,40 @@ const taskSelection = {
   title: true,
   createdAt: true,
   status: true,
+  dueAt: true,
+  bodyV2: {
+    markdown: true,
+  },
 } as const;
+
+const noteTargetSelection = {
+  targetOpportunity: {
+    id: true,
+  },
+  note: noteSelection,
+} as const;
+
+const taskTargetSelection = {
+  targetOpportunity: {
+    id: true,
+  },
+  task: taskSelection,
+} as const;
+
+type OpportunityActivityBundle = {
+  recentNotes: Array<{
+    title: string;
+    markdown: string;
+    createdAt: string | null;
+  }>;
+  recentTasks: Array<{
+    title: string;
+    status: string | null;
+    dueAt: string | null;
+    markdown: string;
+    createdAt: string | null;
+  }>;
+};
 
 const toFullName = (
   name: Record<string, unknown> | null | undefined,
@@ -227,6 +271,22 @@ export const fetchCompanies = async (): Promise<BasicCompanyRecord[]> => {
       typeof record.businessUnit === 'string' ? record.businessUnit : null,
     companyStatus:
       typeof record.companyStatus === 'string' ? record.companyStatus : null,
+    domainName:
+      record.domainName &&
+      typeof record.domainName === 'object' &&
+      typeof (record.domainName as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.domainName as { primaryLinkUrl?: string }).primaryLinkUrl ?? null)
+        : null,
+    linkedinLink:
+      record.linkedinLink &&
+      typeof record.linkedinLink === 'object' &&
+      typeof (record.linkedinLink as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.linkedinLink as { primaryLinkUrl?: string }).primaryLinkUrl ?? null)
+        : null,
+    employees:
+      typeof record.employees === 'number' ? record.employees : null,
   }));
 };
 
@@ -255,6 +315,15 @@ export const fetchPeople = async (): Promise<BasicPersonRecord[]> => {
     jobTitle: typeof record.jobTitle === 'string' ? record.jobTitle : null,
     contactRoleType:
       typeof record.contactRoleType === 'string' ? record.contactRoleType : null,
+    linkedinLink:
+      record.linkedinLink &&
+      typeof record.linkedinLink === 'object' &&
+      typeof (record.linkedinLink as { primaryLinkUrl?: unknown }).primaryLinkUrl ===
+        'string'
+        ? ((record.linkedinLink as { primaryLinkUrl?: string }).primaryLinkUrl ??
+          null)
+        : null,
+    city: typeof record.city === 'string' ? record.city : null,
     companyName:
       record.company &&
       typeof record.company === 'object' &&
@@ -375,8 +444,214 @@ export const fetchTasks = async (): Promise<BasicTaskRecord[]> => {
       title: typeof record.title === 'string' ? record.title : null,
       createdAt: typeof record.createdAt === 'string' ? record.createdAt : null,
       status: typeof record.status === 'string' ? record.status : null,
+      dueAt: typeof record.dueAt === 'string' ? record.dueAt : null,
+      markdown:
+        record.bodyV2 &&
+        typeof record.bodyV2 === 'object' &&
+        typeof (record.bodyV2 as { markdown?: unknown }).markdown === 'string'
+          ? ((record.bodyV2 as { markdown?: string }).markdown ?? null)
+          : null,
     }),
   );
+};
+
+const fetchNoteTargets = async (): Promise<
+  Array<{
+    targetOpportunityId: string | null;
+    note: BasicNoteRecord | null;
+  }>
+> => {
+  const client = createCoreClient();
+
+  try {
+    const response = await client.query<{
+      noteTargets?: { edges: Array<{ node: Record<string, unknown> }> };
+    }>({
+      noteTargets: {
+        __args: buildConnectionArgs({
+          first: 200,
+        }),
+        edges: {
+          node: noteTargetSelection,
+        },
+      },
+    });
+
+    return safeConnectionEdges(response.noteTargets as Record<string, unknown>).map(
+      (record) => ({
+        targetOpportunityId:
+          record.targetOpportunity &&
+          typeof record.targetOpportunity === 'object' &&
+          typeof (record.targetOpportunity as { id?: unknown }).id === 'string'
+            ? ((record.targetOpportunity as { id?: string }).id ?? null)
+            : null,
+        note:
+          record.note && typeof record.note === 'object'
+            ? {
+                id:
+                  typeof (record.note as { id?: unknown }).id === 'string'
+                    ? ((record.note as { id?: string }).id ?? '')
+                    : '',
+                title:
+                  typeof (record.note as { title?: unknown }).title === 'string'
+                    ? ((record.note as { title?: string }).title ?? null)
+                    : null,
+                createdAt:
+                  typeof (record.note as { createdAt?: unknown }).createdAt === 'string'
+                    ? ((record.note as { createdAt?: string }).createdAt ?? null)
+                    : null,
+                markdown:
+                  (record.note as { bodyV2?: Record<string, unknown> }).bodyV2 &&
+                  typeof (record.note as { bodyV2?: Record<string, unknown> }).bodyV2 ===
+                    'object' &&
+                  typeof
+                    (record.note as {
+                      bodyV2?: { markdown?: unknown };
+                    }).bodyV2?.markdown === 'string'
+                    ? ((record.note as {
+                        bodyV2?: { markdown?: string };
+                      }).bodyV2?.markdown ?? null)
+                    : null,
+              }
+            : null,
+      }),
+    );
+  } catch {
+    return [];
+  }
+};
+
+const fetchTaskTargets = async (): Promise<
+  Array<{
+    targetOpportunityId: string | null;
+    task: BasicTaskRecord | null;
+  }>
+> => {
+  const client = createCoreClient();
+
+  try {
+    const response = await client.query<{
+      taskTargets?: { edges: Array<{ node: Record<string, unknown> }> };
+    }>({
+      taskTargets: {
+        __args: buildConnectionArgs({
+          first: 200,
+        }),
+        edges: {
+          node: taskTargetSelection,
+        },
+      },
+    });
+
+    return safeConnectionEdges(response.taskTargets as Record<string, unknown>).map(
+      (record) => ({
+        targetOpportunityId:
+          record.targetOpportunity &&
+          typeof record.targetOpportunity === 'object' &&
+          typeof (record.targetOpportunity as { id?: unknown }).id === 'string'
+            ? ((record.targetOpportunity as { id?: string }).id ?? null)
+            : null,
+        task:
+          record.task && typeof record.task === 'object'
+            ? {
+                id:
+                  typeof (record.task as { id?: unknown }).id === 'string'
+                    ? ((record.task as { id?: string }).id ?? '')
+                    : '',
+                title:
+                  typeof (record.task as { title?: unknown }).title === 'string'
+                    ? ((record.task as { title?: string }).title ?? null)
+                    : null,
+                createdAt:
+                  typeof (record.task as { createdAt?: unknown }).createdAt === 'string'
+                    ? ((record.task as { createdAt?: string }).createdAt ?? null)
+                    : null,
+                status:
+                  typeof (record.task as { status?: unknown }).status === 'string'
+                    ? ((record.task as { status?: string }).status ?? null)
+                    : null,
+                dueAt:
+                  typeof (record.task as { dueAt?: unknown }).dueAt === 'string'
+                    ? ((record.task as { dueAt?: string }).dueAt ?? null)
+                    : null,
+                markdown:
+                  (record.task as { bodyV2?: Record<string, unknown> }).bodyV2 &&
+                  typeof (record.task as { bodyV2?: Record<string, unknown> }).bodyV2 ===
+                    'object' &&
+                  typeof
+                    (record.task as {
+                      bodyV2?: { markdown?: unknown };
+                    }).bodyV2?.markdown === 'string'
+                    ? ((record.task as {
+                        bodyV2?: { markdown?: string };
+                      }).bodyV2?.markdown ?? null)
+                    : null,
+              }
+            : null,
+      }),
+    );
+  } catch {
+    return [];
+  }
+};
+
+const buildOpportunityActivityMap = async (
+  opportunities: BasicOpportunityRecord[],
+): Promise<Record<string, OpportunityActivityBundle>> => {
+  if (opportunities.length === 0) {
+    return {};
+  }
+
+  const opportunityIds = new Set(opportunities.map((opportunity) => opportunity.id));
+  const [noteTargets, taskTargets] = await Promise.all([
+    fetchNoteTargets(),
+    fetchTaskTargets(),
+  ]);
+
+  const activityMap: Record<string, OpportunityActivityBundle> = {};
+
+  for (const opportunity of opportunities) {
+    activityMap[opportunity.id] = {
+      recentNotes: [],
+      recentTasks: [],
+    };
+  }
+
+  for (const noteTarget of noteTargets) {
+    if (
+      !noteTarget.targetOpportunityId ||
+      !opportunityIds.has(noteTarget.targetOpportunityId) ||
+      !noteTarget.note
+    ) {
+      continue;
+    }
+
+    activityMap[noteTarget.targetOpportunityId]?.recentNotes.push({
+      title: noteTarget.note.title ?? '제목 미입력',
+      markdown: noteTarget.note.markdown ?? '',
+      createdAt: noteTarget.note.createdAt ?? null,
+    });
+  }
+
+  for (const taskTarget of taskTargets) {
+    if (
+      !taskTarget.targetOpportunityId ||
+      !opportunityIds.has(taskTarget.targetOpportunityId) ||
+      !taskTarget.task
+    ) {
+      continue;
+    }
+
+    activityMap[taskTarget.targetOpportunityId]?.recentTasks.push({
+      title: taskTarget.task.title ?? '제목 미입력',
+      status: taskTarget.task.status ?? null,
+      dueAt: taskTarget.task.dueAt ?? null,
+      markdown: taskTarget.task.markdown ?? '',
+      createdAt: taskTarget.task.createdAt ?? null,
+    });
+  }
+
+  return activityMap;
 };
 
 const formatCurrency = ({
@@ -418,6 +693,9 @@ const toCompanyContext = (company: BasicCompanyRecord) => ({
   accountSegment: company.accountSegment ?? '미입력',
   businessUnit: company.businessUnit ?? '미입력',
   companyStatus: company.companyStatus ?? '미입력',
+  domainName: company.domainName ?? '미입력',
+  linkedinLink: company.linkedinLink ?? '미입력',
+  employees: company.employees ?? null,
   createdAt: company.createdAt ?? null,
 });
 
@@ -427,8 +705,129 @@ const toPersonContext = (person: BasicPersonRecord) => ({
   primaryEmail: person.primaryEmail ?? '미입력',
   jobTitle: person.jobTitle ?? '미입력',
   contactRoleType: person.contactRoleType ?? '미입력',
+  linkedinLink: person.linkedinLink ?? '미입력',
+  city: person.city ?? '미입력',
   createdAt: person.createdAt ?? null,
 });
+
+const buildOpportunityNextAction = (
+  activity: OpportunityActivityBundle | undefined,
+): string => {
+  const firstTask = activity?.recentTasks
+    ?.slice()
+    .sort((left, right) =>
+      (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
+    )[0];
+
+  if (firstTask?.title) {
+    return firstTask.dueAt
+      ? `${firstTask.title} (기한 ${firstTask.dueAt})`
+      : firstTask.title;
+  }
+
+  const firstNote = activity?.recentNotes
+    ?.slice()
+    .sort((left, right) =>
+      (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
+    )[0];
+
+  if (firstNote?.markdown) {
+    return truncate(firstNote.markdown, 100);
+  }
+
+  return '미입력';
+};
+
+const toOpportunityDetailedContext = (
+  opportunity: BasicOpportunityRecord,
+  activity: OpportunityActivityBundle | undefined,
+) => ({
+  ...toOpportunityContext(opportunity),
+  nextAction: buildOpportunityNextAction(activity),
+  recentTasks:
+    activity?.recentTasks
+      ?.slice()
+      .sort((left, right) =>
+        (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
+      )
+      .slice(0, 3) ?? [],
+  recentNotes:
+    activity?.recentNotes
+      ?.slice()
+      .sort((left, right) =>
+        (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
+      )
+      .slice(0, 2) ?? [],
+});
+
+const flattenReplyText = (reply: SlackReply): string =>
+  [
+    reply.text,
+    ...(reply.blocks ?? []).flatMap((block) => {
+      const text =
+        block &&
+        typeof block === 'object' &&
+        block.text &&
+        typeof block.text === 'object' &&
+        typeof (block.text as { text?: unknown }).text === 'string'
+          ? [(block.text as { text: string }).text]
+          : [];
+
+      return text;
+    }),
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
+
+const isDetailedReplySufficient = ({
+  classification,
+  crmContext,
+  reply,
+}: {
+  classification: SlackIntentClassification;
+  crmContext: Record<string, unknown>;
+  reply: SlackReply;
+}): boolean => {
+  if (classification.detailLevel !== 'DETAILED') {
+    return true;
+  }
+
+  const flattened = flattenReplyText(reply);
+
+  if (flattened.length < 120) {
+    return false;
+  }
+
+  const opportunities = Array.isArray(crmContext.opportunities)
+    ? crmContext.opportunities
+        .filter(
+          (item): item is { name?: string } =>
+            Boolean(item) && typeof item === 'object',
+        )
+        .map((item) => item.name)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : [];
+
+  if (opportunities.length > 0) {
+    const requiredNames = opportunities.slice(0, Math.min(opportunities.length, 3));
+    const matchedNames = requiredNames.filter((name) => flattened.includes(name));
+
+    return matchedNames.length >= Math.min(requiredNames.length, 2);
+  }
+
+  const opportunity =
+    crmContext.opportunity &&
+    typeof crmContext.opportunity === 'object' &&
+    typeof (crmContext.opportunity as { name?: unknown }).name === 'string'
+      ? (crmContext.opportunity as { name: string })
+      : null;
+
+  if (opportunity?.name) {
+    return flattened.includes(opportunity.name);
+  }
+
+  return true;
+};
 
 const maybeSynthesizeReply = async ({
   requestText,
@@ -447,7 +846,17 @@ const maybeSynthesizeReply = async ({
     crmContext,
   });
 
-  return synthesized ?? fallbackReply;
+  if (!synthesized) {
+    return fallbackReply;
+  }
+
+  return isDetailedReplySufficient({
+    classification,
+    crmContext,
+    reply: synthesized,
+  })
+    ? synthesized
+    : fallbackReply;
 };
 
 export const buildMonthlyNewOpinion = ({
@@ -537,9 +946,6 @@ const buildRiskOpinion = (count: number): string =>
     ? '현재 기준에서는 즉시 보완이 필요한 리스크 딜이 없습니다.'
     : '견적·협상 단계에서 벤더/파트너 정보가 빈 딜부터 우선 정리하는 것이 좋습니다.';
 
-const countThisMonth = (values: Array<{ createdAt?: string | null }>): number =>
-  values.filter((value) => value.createdAt?.startsWith(THIS_MONTH_PREFIX)).length;
-
 const findBestOpportunityMatch = (
   opportunities: BasicOpportunityRecord[],
   classification: SlackIntentClassification,
@@ -565,6 +971,65 @@ const findBestOpportunityMatch = (
   );
 };
 
+const selectByTimeframe = <T extends { createdAt?: string | null }>(
+  items: T[],
+  timeframe: SlackIntentClassification['timeframe'],
+): T[] => {
+  if (timeframe === 'THIS_MONTH') {
+    return items.filter((item) => item.createdAt?.startsWith(THIS_MONTH_PREFIX));
+  }
+
+  if (timeframe === 'RECENT') {
+    return sortNewestFirst(items).slice(0, 10);
+  }
+
+  return sortNewestFirst(items);
+};
+
+const getMonthlyLabel = (timeframe: SlackIntentClassification['timeframe']): string =>
+  timeframe === 'THIS_MONTH'
+    ? '이번달 신규 현황'
+    : timeframe === 'RECENT'
+      ? '최근 신규 현황'
+      : '신규 영업기회 현황';
+
+const buildDetailedOpportunityBody = (
+  opportunities: BasicOpportunityRecord[],
+  activityMap: Record<string, OpportunityActivityBundle>,
+): string =>
+  opportunities
+    .map((opportunity, index) => {
+      const detailed = toOpportunityDetailedContext(
+        opportunity,
+        activityMap[opportunity.id],
+      );
+      const latestTask = detailed.recentTasks[0];
+      const latestNote = detailed.recentNotes[0];
+      const recentTaskText = latestTask
+        ? latestTask.dueAt
+          ? `${latestTask.title} (기한 ${latestTask.dueAt})`
+          : latestTask.title
+        : '미입력';
+      const recentNoteText = latestNote
+        ? truncate(latestNote.markdown || latestNote.title, 100)
+        : '미입력';
+
+      return [
+        `${index + 1}. ${detailed.name}`,
+        `- 회사: ${detailed.companyName}`,
+        `- 담당자: ${detailed.pointOfContactName}`,
+        `- 단계: ${detailed.stage}`,
+        `- 금액: ${detailed.amount}`,
+        `- 예상 마감일: ${detailed.closeDate}`,
+        `- 주 벤더사: ${detailed.primaryVendorCompanyName}`,
+        `- 주 파트너사: ${detailed.primaryPartnerCompanyName}`,
+        `- 최근 메모: ${recentNoteText}`,
+        `- 최근 작업: ${recentTaskText}`,
+        `- 다음 액션: ${detailed.nextAction}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+
 const buildMonthlyNewReply = async ({
   classification,
   text,
@@ -581,21 +1046,18 @@ const buildMonthlyNewReply = async ({
     fetchOpportunities(),
   ]);
 
-  const companyCount = countThisMonth(companies);
-  const peopleCount = countThisMonth(people);
-  const opportunityCount = countThisMonth(opportunities);
-  const monthlyCompanies = sortNewestFirst(
-    companies.filter((company) => company.createdAt?.startsWith(THIS_MONTH_PREFIX)),
+  const scopedCompanies = selectByTimeframe(companies, classification.timeframe);
+  const scopedPeople = selectByTimeframe(people, classification.timeframe);
+  const scopedOpportunities = selectByTimeframe(
+    opportunities,
+    classification.timeframe,
   );
-  const monthlyPeople = sortNewestFirst(
-    people.filter((person) => person.createdAt?.startsWith(THIS_MONTH_PREFIX)),
-  );
-  const monthlyOpportunities = sortNewestFirst(
-    opportunities.filter((opportunity) =>
-      opportunity.createdAt?.startsWith(THIS_MONTH_PREFIX),
-    ),
-  );
+  const activityMap = await buildOpportunityActivityMap(scopedOpportunities);
+  const companyCount = scopedCompanies.length;
+  const peopleCount = scopedPeople.length;
+  const opportunityCount = scopedOpportunities.length;
   const detailLimit = classification.detailLevel === 'DETAILED' ? 20 : 8;
+  const queryLabel = getMonthlyLabel(classification.timeframe);
   const resultJson = {
     queryCategory: classification.queryCategory,
     detailLevel: classification.detailLevel,
@@ -603,47 +1065,91 @@ const buildMonthlyNewReply = async ({
     companyCount,
     peopleCount,
     opportunityCount,
-    companies: limitItems(monthlyCompanies.map(toCompanyContext), detailLimit),
-    people: limitItems(monthlyPeople.map(toPersonContext), detailLimit),
+    companies: limitItems(scopedCompanies.map(toCompanyContext), detailLimit),
+    people: limitItems(scopedPeople.map(toPersonContext), detailLimit),
     opportunities: limitItems(
-      monthlyOpportunities.map(toOpportunityContext),
+      scopedOpportunities.map((opportunity) =>
+        toOpportunityDetailedContext(opportunity, activityMap[opportunity.id]),
+      ),
       detailLimit,
     ),
   };
-  const fallbackReply = {
-    text: `이번달 신규 현황입니다. 회사 ${companyCount}건, 담당자 ${peopleCount}건, 영업기회 ${opportunityCount}건입니다.`,
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text:
-            `*이번달 신규 현황*\n` +
-            `• 회사: *${companyCount}건*\n` +
-            `• 담당자: *${peopleCount}건*\n` +
-            `• 영업기회: *${opportunityCount}건*`,
-        },
-      },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*의견*\n${buildMonthlyNewOpinion({
-            companyCount,
-            peopleCount,
-            opportunityCount,
-          })}`,
-        },
-      },
-    ],
-  } satisfies SlackReply;
+  const fallbackReply =
+    classification.detailLevel === 'DETAILED'
+      ? ({
+          text: `${queryLabel}을 상세 정리했습니다. 영업기회 ${opportunityCount}건입니다.`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text:
+                  `*${queryLabel}*\n` +
+                  `• 회사: *${companyCount}건*\n` +
+                  `• 담당자: *${peopleCount}건*\n` +
+                  `• 영업기회: *${opportunityCount}건*`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text:
+                  opportunityCount === 0
+                    ? '*신규 영업기회 상세*\n현재 조건에 맞는 영업기회가 없습니다.'
+                    : `*신규 영업기회 상세*\n${buildDetailedOpportunityBody(
+                        limitItems(scopedOpportunities, detailLimit),
+                        activityMap,
+                      )}`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*의견*\n${buildMonthlyNewOpinion({
+                  companyCount,
+                  peopleCount,
+                  opportunityCount,
+                })}`,
+              },
+            },
+          ],
+        } satisfies SlackReply)
+      : ({
+          text: `${queryLabel}입니다. 회사 ${companyCount}건, 담당자 ${peopleCount}건, 영업기회 ${opportunityCount}건입니다.`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text:
+                  `*${queryLabel}*\n` +
+                  `• 회사: *${companyCount}건*\n` +
+                  `• 담당자: *${peopleCount}건*\n` +
+                  `• 영업기회: *${opportunityCount}건*`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*의견*\n${buildMonthlyNewOpinion({
+                  companyCount,
+                  peopleCount,
+                  opportunityCount,
+                })}`,
+              },
+            },
+          ],
+        } satisfies SlackReply);
 
   return {
     reply: await maybeSynthesizeReply({
       requestText: text,
       classification,
       crmContext: {
-        queryLabel: '이번달 신규 현황',
+        queryLabel,
         ...resultJson,
       },
       fallbackReply,

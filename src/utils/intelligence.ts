@@ -4,6 +4,8 @@ import {
   buildQueryPlannerUserPrompt,
   buildQuerySynthesisSystemPrompt,
   buildQuerySynthesisUserPrompt,
+  buildPublicEnrichmentSystemPrompt,
+  buildPublicEnrichmentUserPrompt,
   buildWriteDraftSystemPrompt,
   buildWriteDraftUserPrompt,
 } from 'src/constants/slack-agent-prompts';
@@ -19,7 +21,14 @@ import type {
   SlackReply,
   SlackIntentClassification,
 } from 'src/types/slack-agent';
+import { extractMeetingFacts } from 'src/utils/crm-facts';
+import type { WriteCandidateContext } from 'src/utils/crm-write-candidates';
 import { fetchWriteCandidateContext } from 'src/utils/crm-write-candidates';
+import {
+  extractEntityHints,
+  sanitizeCompanyName,
+  sanitizePersonName,
+} from 'src/utils/entity-hints';
 import { getAnthropicModel, getOptionalEnv } from 'src/utils/env';
 import {
   cleanSlackText,
@@ -35,6 +44,8 @@ const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 2048;
 const CRM_QUERY_PLAN_TOOL_NAME = 'plan_crm_query';
 
 type JsonSchema = Record<string, unknown>;
+
+type AnthropicToolDefinition = Record<string, unknown>;
 
 type AnthropicTextBlock = {
   type?: string;
@@ -62,6 +73,24 @@ type SynthesizedCrmReply = {
 };
 
 type StructuredCrmWriteDraft = CrmWriteDraft;
+
+type PublicEnrichmentResponse = {
+  companies: Array<{
+    name: string;
+    domainName?: string;
+    linkedinLink?: string;
+    employees?: number;
+  }>;
+  people: Array<{
+    name: string;
+    companyName?: string;
+    jobTitle?: string;
+    linkedinLink?: string;
+    city?: string;
+  }>;
+};
+
+type MeetingFacts = ReturnType<typeof extractMeetingFacts>;
 
 const crmReplySchema = {
   type: 'object',
@@ -260,68 +289,48 @@ const crmWriteDraftSchema = {
   additionalProperties: false,
 } as const satisfies JsonSchema;
 
+const publicEnrichmentSchema = {
+  type: 'object',
+  properties: {
+    companies: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          domainName: { type: 'string' },
+          linkedinLink: { type: 'string' },
+          employees: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+    },
+    people: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          companyName: { type: 'string' },
+          jobTitle: { type: 'string' },
+          linkedinLink: { type: 'string' },
+          city: { type: 'string' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['companies', 'people'],
+  additionalProperties: false,
+} as const satisfies JsonSchema;
+
 const containsAny = (value: string, keywords: string[]): boolean =>
   keywords.some((keyword) => value.includes(keyword));
 
 const toSingleLineSlackText = (value: string): string =>
   cleanSlackText(value, { singleLine: true });
-
-const COMPANY_STOPWORDS = new Set([
-  '관련해서',
-  '그대로',
-  '고객',
-  '고객사',
-  '회사',
-  '오늘',
-  '이번',
-  '기존에',
-  '현재',
-  '후속',
-  '미팅',
-]);
-
-const PERSON_PREFIX_PATTERN =
-  /^(?:담당자는?|실무\s*담당자는?|의사결정자는?|참석자는?|그대로)\s+/;
-const PERSON_TITLE_PATTERN =
-  /\s*(?:부장|차장|팀장|책임|이사|매니저|본부장|실장|대리|과장|상무|전무|대표)(?:이다|입니다)?$/;
-
-const normalizeEntityToken = (value: string): string =>
-  cleanSlackText(value, { singleLine: true })
-    .replace(/[“”"'`()[\]{}<>]/g, ' ')
-    .replace(/[,:;!?]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const sanitizeCompanyName = (value: string): string | null => {
-  const normalized = normalizeEntityToken(value).replace(
-    /^(?:오늘|이번|기존에|현재|후속|관련해서|그대로)\s+/,
-    '',
-  );
-
-  if (normalized.length < 2 || COMPANY_STOPWORDS.has(normalized)) {
-    return null;
-  }
-
-  return normalized;
-};
-
-const sanitizePersonName = (value: string): string | null => {
-  const normalized = normalizeEntityToken(value)
-    .replace(PERSON_PREFIX_PATTERN, '')
-    .replace(PERSON_TITLE_PATTERN, '')
-    .trim();
-
-  return normalized.length >= 2 ? normalized : null;
-};
-
-const collectMatches = (
-  text: string,
-  pattern: RegExp,
-  sanitizer: (value: string) => string | null,
-): string[] =>
-  Array.from(text.matchAll(pattern))
-    .map((match) => sanitizer(match[1] ?? ''))
-    .filter((value): value is string => Boolean(value));
 
 const determineDetailLevel = (normalized: string): QueryDetailLevel =>
   containsAny(normalized, [
@@ -346,6 +355,12 @@ const determineTimeframe = (normalized: string): QueryTimeframe =>
     : containsAny(normalized, ['최근', 'latest', 'recent'])
       ? 'RECENT'
       : 'ALL_TIME';
+
+const mentionsThisMonth = (normalized: string): boolean =>
+  containsAny(normalized, ['이번달', '금월', 'this month']);
+
+const mentionsRecent = (normalized: string): boolean =>
+  containsAny(normalized, ['최근', 'latest', 'recent']);
 
 const determineFocusEntity = (
   normalized: string,
@@ -377,55 +392,6 @@ const determineFocusEntity = (
   return 'GENERAL';
 };
 
-const extractEntityHints = (text: string): EntityHints => {
-  const companyMatches = [
-    ...collectMatches(
-      text,
-      /([A-Za-z0-9가-힣&._-]{2,})(?:\s*)(?:회사|고객|고객사|벤더|파트너)/g,
-      sanitizeCompanyName,
-    ),
-    ...collectMatches(
-      text,
-      /([A-Za-z0-9가-힣&._-]{2,}(?:은행|금융|증권|보험|카드|전자|제조|물산|건설|화학|반도체|그룹))/g,
-      sanitizeCompanyName,
-    ),
-    ...collectMatches(
-      text,
-      /([A-Za-z0-9가-힣&._-]{2,})\s+(?:인프라팀|보안팀|설계본부|본부장|운영총괄|영업팀|구매팀|총괄|실무팀)/g,
-      sanitizeCompanyName,
-    ),
-  ];
-
-  const opportunityMatches = Array.from(
-    text.matchAll(/([A-Za-z0-9가-힣&._\-/]{2,})(?:\s*)(?:딜|기회|영업기회|PoC|견적)/g),
-  ).map((match) => match[1] ?? '');
-
-  const personMatches = [
-    ...collectMatches(
-      text,
-      /(?:담당자는?|실무\s*담당자는?|의사결정자는?)\s*((?:그대로\s+)?[A-Za-z가-힣]{2,}(?:\s+[A-Za-z가-힣]{2,})?)(?:\s*)(?:부장|차장|팀장|책임|이사|매니저|본부장)?/g,
-      sanitizePersonName,
-    ),
-    ...collectMatches(
-      text,
-      /([A-Za-z가-힣]{2,}(?:\s+[A-Za-z가-힣]{2,})?)(?:\s*)(?:담당자|매니저|이사|부장|차장|팀장|책임|본부장)/g,
-      sanitizePersonName,
-    ),
-  ];
-
-  const solutionMatches = Array.from(
-    text.matchAll(
-      /(Citrix|NetScaler|Nubo|Tibco|TIBCO|Spotfire|VDI|VMI|ADC|Analytics)/gi,
-    ),
-  ).map((match) => match[1] ?? '');
-
-  return {
-    companies: uniqueNonEmpty(companyMatches),
-    opportunities: uniqueNonEmpty(opportunityMatches),
-    people: uniqueNonEmpty(personMatches),
-    solutions: uniqueNonEmpty(solutionMatches),
-  };
-};
 
 const buildFallbackClassification = (
   text: string,
@@ -484,14 +450,12 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
   const actions: CrmActionRecord[] = [];
   const cleanedText = cleanSlackText(text);
   const entityHints = extractEntityHints(cleanedText);
+  const facts = extractMeetingFacts(cleanedText);
   const cleanedSingleLine = toSingleLineSlackText(cleanedText);
   const normalized = normalizeText(cleanedText);
-  const noteTitle =
-    entityHints.companies[0] && entityHints.solutions[0]
-      ? `${entityHints.companies[0]} ${entityHints.solutions[0]} 기회 메모`
-      : entityHints.companies[0]
-        ? `${entityHints.companies[0]} 영업 메모`
-        : truncate(cleanedSingleLine || '영업 메모', 50);
+  const companyName = facts.companyName ?? entityHints.companies[0] ?? null;
+  const pointOfContactName = facts.personName ?? entityHints.people[0] ?? null;
+  const noteTitle = facts.noteTitle || truncate(cleanedSingleLine || '영업 메모', 50);
 
   actions.push({
     kind: 'note',
@@ -502,10 +466,11 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
         markdown: cleanedText,
         blocknote: null,
       },
+      ...(companyName ? { companyName } : {}),
+      ...(pointOfContactName ? { pointOfContactName } : {}),
+      ...(facts.opportunityName ? { opportunityName: facts.opportunityName } : {}),
     },
   });
-
-  const companyName = entityHints.companies[0];
 
   if (companyName) {
     actions.push({
@@ -518,8 +483,24 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
     });
   }
 
+  if (pointOfContactName) {
+    actions.push({
+      kind: 'person',
+      operation: 'create',
+      lookup: {
+        name: pointOfContactName,
+        ...(companyName ? { companyName } : {}),
+      },
+      data: {
+        name: pointOfContactName,
+        ...(companyName ? { companyName } : {}),
+        ...(facts.personTitle ? { jobTitle: facts.personTitle } : {}),
+      },
+    });
+  }
+
   if (
-    entityHints.companies[0] &&
+    companyName &&
     (entityHints.solutions[0] ||
       containsAny(normalized, ['기회', '검토', '전환', '제안', 'poc', '견적', '도입', '수요']))
   ) {
@@ -527,35 +508,45 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
       kind: 'opportunity',
       operation: 'create',
       data: {
-        name:
-          entityHints.companies[0] && entityHints.solutions[0]
-            ? `${entityHints.companies[0]} ${entityHints.solutions[0]} 전환`
-            : `${entityHints.companies[0]} 신규 영업기회`,
-        companyName: entityHints.companies[0],
-        pointOfContactName: entityHints.people[0] ?? undefined,
-        stage: containsAny(normalized, ['poc'])
-          ? 'DISCOVERY_POC'
-          : containsAny(normalized, ['견적', '제안'])
-            ? 'QUOTED'
-            : 'VENDOR_ALIGNED',
+        name: facts.opportunityName ?? `${companyName} 신규 영업기회`,
+        companyName,
+        ...(pointOfContactName ? { pointOfContactName } : {}),
+        stage:
+          facts.stage ??
+          (containsAny(normalized, ['poc'])
+            ? 'DISCOVERY_POC'
+            : containsAny(normalized, ['견적', '제안'])
+              ? 'QUOTED'
+              : 'VENDOR_ALIGNED'),
+        ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
+        ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
       },
     });
   }
 
-  if (containsAny(normalizeText(text), ['할일', 'todo', '후속', '액션'])) {
+  if (
+    facts.taskTitle ||
+    facts.nextAction ||
+    containsAny(normalizeText(text), ['할일', 'todo', '후속', '액션', '요청받았다', '전달해야'])
+  ) {
     actions.push({
       kind: 'task',
       operation: 'create',
       data: {
         title:
-          entityHints.companies[0]
-            ? `${entityHints.companies[0]} 후속 작업`
-            : `후속 작업 - ${truncate(cleanedSingleLine, 36)}`,
+          facts.taskTitle ??
+          (companyName
+            ? `${companyName} 후속 작업`
+            : `후속 작업 - ${truncate(cleanedSingleLine, 36)}`),
         status: 'TODO',
         bodyV2: {
-          markdown: cleanedText,
+          markdown: facts.taskBody ?? cleanedText,
           blocknote: null,
         },
+        ...(facts.dueAt ? { dueAt: facts.dueAt } : {}),
+        ...(companyName ? { companyName } : {}),
+        ...(pointOfContactName ? { pointOfContactName } : {}),
+        ...(facts.opportunityName ? { opportunityName: facts.opportunityName } : {}),
       },
     });
   }
@@ -565,8 +556,8 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
 
 const buildFallbackDraft = (text: string): CrmWriteDraft => {
   const cleanedText = cleanSlackText(text);
-  const entityHints = extractEntityHints(cleanedText);
   const actions = fallbackWriteActions(cleanedText);
+  const facts = extractMeetingFacts(cleanedText);
 
   return {
     summary: '정리된 메모를 기준으로 CRM 반영 초안을 만들었습니다.',
@@ -579,7 +570,7 @@ const buildFallbackDraft = (text: string): CrmWriteDraft => {
     review: {
       overview: '자동 추출 결과를 기반으로 반영 계획을 만들었습니다.',
       opinion:
-        entityHints.companies[0] && actions.some((action) => action.kind === 'opportunity')
+        facts.companyName && actions.some((action) => action.kind === 'opportunity')
           ? '회사와 기회 신호가 있어 영업기회 생성 초안을 포함했습니다.'
           : '정보가 제한적이어서 메모 중심으로 보수적으로 작성했습니다.',
       items: actions.map((action) => ({
@@ -744,6 +735,698 @@ const sanitizeDraftReview = (
   };
 };
 
+const hasTextValue = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const isEmptyDraftValue = (value: unknown): boolean =>
+  value == null || (typeof value === 'string' && value.trim().length === 0);
+
+const isGenericDraftValue = ({
+  kind,
+  key,
+  value,
+}: {
+  kind: CrmActionRecord['kind'];
+  key: string;
+  value: unknown;
+}): boolean => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const normalized = normalizeText(cleanSlackText(value, { singleLine: true }));
+
+  if (key === 'companyName') {
+    return sanitizeCompanyName(value) == null;
+  }
+
+  if (key === 'pointOfContactName') {
+    return sanitizePersonName(value) == null;
+  }
+
+  if (key === 'name' && kind === 'company') {
+    return sanitizeCompanyName(value) == null;
+  }
+
+  if (key === 'name' && kind === 'person') {
+    return sanitizePersonName(value) == null;
+  }
+
+  if (key === 'name' && kind === 'opportunity') {
+    return normalized.includes('신규 영업기회') || normalized.includes('관련해서');
+  }
+
+  if (key === 'title' && (kind === 'note' || kind === 'task')) {
+    return (
+      normalized.includes('영업 메모') ||
+      normalized.includes('후속 작업') ||
+      normalized === '미팅 메모'
+    );
+  }
+
+  return false;
+};
+
+const shouldReplaceWithGroundedValue = ({
+  kind,
+  key,
+  currentValue,
+}: {
+  kind: CrmActionRecord['kind'];
+  key: string;
+  currentValue: unknown;
+}): boolean => isEmptyDraftValue(currentValue) || isGenericDraftValue({ kind, key, value: currentValue });
+
+const mergeActionData = (
+  action: CrmActionRecord,
+  groundedData: Record<string, unknown>,
+): CrmActionRecord => {
+  const nextData = { ...action.data };
+
+  for (const [key, value] of Object.entries(groundedData)) {
+    if (value == null) {
+      continue;
+    }
+
+    if (
+      shouldReplaceWithGroundedValue({
+        kind: action.kind,
+        key,
+        currentValue: nextData[key],
+      })
+    ) {
+      nextData[key] = value;
+    }
+  }
+
+  return {
+    ...action,
+    data: nextData,
+  };
+};
+
+const ensureAction = ({
+  actions,
+  kind,
+  groundedData,
+  factory,
+}: {
+  actions: CrmActionRecord[];
+  kind: CrmActionRecord['kind'];
+  groundedData: Record<string, unknown>;
+  factory: () => CrmActionRecord;
+}): CrmActionRecord[] => {
+  const index = actions.findIndex((action) => action.kind === kind);
+
+  if (index >= 0) {
+    const nextActions = [...actions];
+    nextActions[index] = mergeActionData(nextActions[index], groundedData);
+
+    return nextActions;
+  }
+
+  return [...actions, mergeActionData(factory(), groundedData)];
+};
+
+const createBodyV2 = (markdown: string): { markdown: string; blocknote: null } => ({
+  markdown,
+  blocknote: null,
+});
+
+const hasOpportunitySignal = (sourceText: string, facts: MeetingFacts): boolean => {
+  const normalized = normalizeText(sourceText);
+
+  return Boolean(
+    facts.companyName &&
+      (facts.solutionName ||
+        facts.vendorName ||
+        facts.stage ||
+        facts.closeDate ||
+        facts.nextAction ||
+        containsAny(normalized, [
+          '기회',
+          '검토',
+          '전환',
+          '제안',
+          'poc',
+          '견적',
+          '도입',
+          '수요',
+          '업그레이드',
+          '고도화',
+          '증설',
+        ])),
+  );
+};
+
+const isSameNormalized = (
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean => hasTextValue(left ?? null) && hasTextValue(right ?? null)
+  ? normalizeText(left) === normalizeText(right)
+  : false;
+
+const pickMatchingOpportunityCandidate = ({
+  candidateContext,
+  facts,
+}: {
+  candidateContext: WriteCandidateContext;
+  facts: MeetingFacts;
+}) => {
+  const scored = candidateContext.opportunities
+    .map((opportunity: WriteCandidateContext['opportunities'][number]) => {
+      let score = 0;
+
+      if (!isSameNormalized(opportunity.companyName ?? null, facts.companyName)) {
+        return {
+          opportunity,
+          score: -1,
+        };
+      }
+
+      score += 5;
+
+      if (
+        facts.personName &&
+        isSameNormalized(opportunity.pointOfContactName ?? null, facts.personName)
+      ) {
+        score += 3;
+      }
+
+      if (
+        facts.vendorName &&
+        isSameNormalized(
+          opportunity.primaryVendorCompanyName ?? null,
+          facts.vendorName,
+        )
+      ) {
+        score += 3;
+      }
+
+      if (
+        facts.solutionName &&
+        normalizeText(opportunity.name).includes(normalizeText(facts.solutionName))
+      ) {
+        score += 2;
+      }
+
+      if (
+        facts.opportunityName &&
+        (normalizeText(opportunity.name).includes(normalizeText(facts.opportunityName)) ||
+          normalizeText(facts.opportunityName).includes(normalizeText(opportunity.name)))
+      ) {
+        score += 2;
+      }
+
+      return {
+        opportunity,
+        score,
+      };
+    })
+    .filter((entry: { opportunity: WriteCandidateContext['opportunities'][number]; score: number }) => entry.score >= 6)
+    .sort(
+      (
+        left: { opportunity: WriteCandidateContext['opportunities'][number]; score: number },
+        right: { opportunity: WriteCandidateContext['opportunities'][number]; score: number },
+      ) => right.score - left.score,
+    );
+
+  return scored[0]?.opportunity ?? null;
+};
+
+const applyCandidateLookups = ({
+  draft,
+  candidateContext,
+  facts,
+}: {
+  draft: CrmWriteDraft;
+  candidateContext: WriteCandidateContext;
+  facts: MeetingFacts;
+}): CrmWriteDraft => {
+  const companyCandidate = candidateContext.companies.find((company) =>
+    isSameNormalized(company.name, facts.companyName),
+  );
+  const personCandidate = candidateContext.people.find(
+    (person: WriteCandidateContext['people'][number]) =>
+      isSameNormalized(person.fullName, facts.personName) &&
+      (!facts.companyName || isSameNormalized(person.companyName ?? null, facts.companyName)),
+  );
+  const opportunityCandidate = pickMatchingOpportunityCandidate({
+    candidateContext,
+    facts,
+  });
+
+  return {
+    ...draft,
+    actions: draft.actions.map((action) => {
+      if (action.kind === 'company' && companyCandidate) {
+        return {
+          ...action,
+          lookup: {
+            ...(action.lookup ?? {}),
+            name: companyCandidate.name,
+          },
+        };
+      }
+
+      if (action.kind === 'person' && personCandidate) {
+        return {
+          ...action,
+          lookup: {
+            ...(action.lookup ?? {}),
+            name: personCandidate.fullName,
+            ...(personCandidate.companyName ? { companyName: personCandidate.companyName } : {}),
+          },
+        };
+      }
+
+      if (action.kind === 'opportunity' && opportunityCandidate) {
+        return {
+          ...action,
+          operation: 'update',
+          lookup: {
+            ...(action.lookup ?? {}),
+            name: opportunityCandidate.name,
+          },
+        };
+      }
+
+      return action;
+    }),
+  };
+};
+
+const toReviewFieldEntries = (data: Record<string, unknown>) =>
+  Object.entries(data)
+    .flatMap(([key, value]) => {
+      if (typeof value === 'string' || typeof value === 'number') {
+        return [{ key, value: String(value) }];
+      }
+
+      if (
+        value &&
+        typeof value === 'object' &&
+        typeof (value as { primaryLinkUrl?: unknown }).primaryLinkUrl === 'string'
+      ) {
+        return [{ key, value: String((value as { primaryLinkUrl: string }).primaryLinkUrl) }];
+      }
+
+      if (
+        key === 'bodyV2' &&
+        value &&
+        typeof value === 'object' &&
+        typeof (value as { markdown?: unknown }).markdown === 'string'
+      ) {
+        return [{ key: 'body', value: truncate(String((value as { markdown: string }).markdown), 80) }];
+      }
+
+      return [];
+    })
+    .slice(0, 6);
+
+const buildReviewReason = ({
+  action,
+}: {
+  action: CrmActionRecord;
+}): string => {
+  if (action.kind === 'company') {
+    return '고객사 정보를 근거로 회사 레코드에 반영합니다.';
+  }
+
+  if (action.kind === 'person') {
+    return '담당자와 직함 정보가 확인되어 담당자 레코드에 반영합니다.';
+  }
+
+  if (action.kind === 'opportunity') {
+    return action.operation === 'update'
+      ? '회사, 담당자, 솔루션 후보 맥락이 맞아 기존 영업기회를 업데이트합니다.'
+      : '회사와 기회 신호가 충분해 신규 영업기회로 반영합니다.';
+  }
+
+  if (action.kind === 'task') {
+    return '후속 일정이나 요청사항이 있어 작업으로 남깁니다.';
+  }
+
+  return '원문 미팅 메모를 근거 기록으로 남깁니다.';
+};
+
+const buildReviewFromDraft = ({
+  draft,
+}: {
+  draft: CrmWriteDraft;
+}): CrmWriteReview => {
+  const hasOpportunityAction = draft.actions.some((action) => action.kind === 'opportunity');
+  const hasTaskAction = draft.actions.some((action) => action.kind === 'task');
+  const hasPersonAction = draft.actions.some((action) => action.kind === 'person');
+
+  const overview = hasOpportunityAction
+    ? hasTaskAction
+      ? '회사, 담당자, 영업기회와 후속 작업 기준으로 CRM 반영 계획을 정리했습니다.'
+      : '회사, 담당자, 영업기회 기준으로 CRM 반영 계획을 정리했습니다.'
+    : hasPersonAction
+      ? '회사와 담당자 중심으로 CRM 반영 계획을 정리했습니다.'
+      : '메모 중심으로 CRM 반영 계획을 정리했습니다.';
+
+  const opinion = draft.actions.some(
+    (action) => action.kind === 'opportunity' && action.operation === 'update',
+  )
+    ? '기존 CRM 후보와 맥락이 맞는 항목은 업데이트 중심으로, 나머지는 신규 생성 중심으로 정리했습니다.'
+    : hasOpportunityAction
+      ? '회사와 기회 신호가 충분해 영업기회 반영 초안을 포함했습니다.'
+      : '정보가 제한적이어서 메모와 보조 기록 중심으로 정리했습니다.';
+
+  return {
+    overview,
+    opinion,
+    items: draft.actions.map((action) => ({
+      kind: action.kind,
+      decision: action.operation === 'update' ? 'UPDATE' : 'CREATE',
+      target:
+        typeof action.data.title === 'string'
+          ? action.data.title
+          : typeof action.data.name === 'string'
+            ? action.data.name
+            : action.lookup?.name ?? action.kind,
+      matchedRecord: action.lookup?.name ?? null,
+      reason: buildReviewReason({ action }),
+      fields: toReviewFieldEntries(action.data),
+    })),
+  };
+};
+
+const groundDraftWithMeetingFacts = ({
+  draft,
+  sourceText,
+  candidateContext,
+}: {
+  draft: CrmWriteDraft;
+  sourceText: string;
+  candidateContext: WriteCandidateContext;
+}): CrmWriteDraft => {
+  const facts = extractMeetingFacts(sourceText);
+  let actions = [...draft.actions];
+
+  actions = ensureAction({
+    actions,
+    kind: 'note',
+    groundedData: {
+      title: facts.noteTitle,
+      bodyV2: createBodyV2(sourceText),
+      ...(facts.companyName ? { companyName: facts.companyName } : {}),
+      ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
+      ...(facts.opportunityName ? { opportunityName: facts.opportunityName } : {}),
+    },
+    factory: () => ({
+      kind: 'note',
+      operation: 'create',
+      data: {
+        title: facts.noteTitle,
+        bodyV2: createBodyV2(sourceText),
+      },
+    }),
+  });
+
+  if (facts.companyName) {
+    actions = ensureAction({
+      actions,
+      kind: 'company',
+      groundedData: {
+        name: facts.companyName,
+      },
+      factory: () => ({
+        kind: 'company',
+        operation: 'create',
+        lookup: {
+          name: facts.companyName as string,
+        },
+        data: {
+          name: facts.companyName as string,
+        },
+      }),
+    });
+  }
+
+  if (facts.personName) {
+    actions = ensureAction({
+      actions,
+      kind: 'person',
+      groundedData: {
+        name: facts.personName,
+        ...(facts.personTitle ? { jobTitle: facts.personTitle } : {}),
+        ...(facts.companyName ? { companyName: facts.companyName } : {}),
+      },
+      factory: () => ({
+        kind: 'person',
+        operation: 'create',
+        lookup: {
+          name: facts.personName as string,
+          ...(facts.companyName ? { companyName: facts.companyName } : {}),
+        },
+        data: {
+          name: facts.personName as string,
+          ...(facts.personTitle ? { jobTitle: facts.personTitle } : {}),
+          ...(facts.companyName ? { companyName: facts.companyName } : {}),
+        },
+      }),
+    });
+  }
+
+  if (hasOpportunitySignal(sourceText, facts)) {
+    actions = ensureAction({
+      actions,
+      kind: 'opportunity',
+      groundedData: {
+        ...(facts.opportunityName ? { name: facts.opportunityName } : {}),
+        ...(facts.companyName ? { companyName: facts.companyName } : {}),
+        ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
+        ...(facts.stage ? { stage: facts.stage } : {}),
+        ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
+        ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
+      },
+      factory: () => ({
+        kind: 'opportunity',
+        operation: 'create',
+        data: {
+          name: facts.opportunityName ?? '신규 영업기회',
+          ...(facts.companyName ? { companyName: facts.companyName } : {}),
+          ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
+          ...(facts.stage ? { stage: facts.stage } : {}),
+          ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
+          ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
+        },
+      }),
+    });
+  }
+
+  if (facts.taskTitle || facts.nextAction) {
+    actions = ensureAction({
+      actions,
+      kind: 'task',
+      groundedData: {
+        ...(facts.taskTitle ? { title: facts.taskTitle } : {}),
+        status: 'TODO',
+        ...(facts.taskBody ? { bodyV2: createBodyV2(facts.taskBody) } : {}),
+        ...(facts.dueAt ? { dueAt: facts.dueAt } : {}),
+        ...(facts.companyName ? { companyName: facts.companyName } : {}),
+        ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
+        ...(facts.opportunityName ? { opportunityName: facts.opportunityName } : {}),
+      },
+      factory: () => ({
+        kind: 'task',
+        operation: 'create',
+        data: {
+          title: facts.taskTitle ?? '후속 작업',
+          status: 'TODO',
+          ...(facts.taskBody ? { bodyV2: createBodyV2(facts.taskBody) } : {}),
+          ...(facts.dueAt ? { dueAt: facts.dueAt } : {}),
+          ...(facts.companyName ? { companyName: facts.companyName } : {}),
+          ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
+          ...(facts.opportunityName ? { opportunityName: facts.opportunityName } : {}),
+        },
+      }),
+    });
+  }
+
+  const groundedDraft = applyCandidateLookups({
+    draft: {
+      ...draft,
+      sourceText,
+      actions,
+    },
+    candidateContext,
+    facts,
+  });
+
+  return {
+    ...groundedDraft,
+    review: buildReviewFromDraft({
+      draft: groundedDraft,
+    }),
+  };
+};
+
+const buildWebSearchTool = (): AnthropicToolDefinition => ({
+  type: 'web_search_20250305',
+  name: 'web_search',
+  max_uses: 4,
+  user_location: {
+    type: 'approximate',
+    city: 'Seoul',
+    region: 'Seoul',
+    country: 'KR',
+    timezone: 'Asia/Seoul',
+  },
+});
+
+const toLinksValue = (primaryLinkUrl: string): { primaryLinkUrl: string } => ({
+  primaryLinkUrl,
+});
+
+const mergePublicEnrichmentIntoDraft = (
+  draft: CrmWriteDraft,
+  enrichment: PublicEnrichmentResponse | null,
+): CrmWriteDraft => {
+  if (!enrichment) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    actions: draft.actions.map((action) => {
+      if (action.kind === 'company') {
+        const name =
+          typeof action.data.name === 'string'
+            ? action.data.name
+            : typeof action.lookup?.name === 'string'
+              ? action.lookup.name
+              : null;
+        const enriched = enrichment.companies.find(
+          (company) =>
+            typeof name === 'string' &&
+            normalizeText(company.name) === normalizeText(name),
+        );
+
+        if (!enriched) {
+          return action;
+        }
+
+        return {
+          ...action,
+          data: {
+            ...action.data,
+            ...(enriched.domainName && !action.data.domainName
+              ? { domainName: toLinksValue(enriched.domainName) }
+              : {}),
+            ...(enriched.linkedinLink && !action.data.linkedinLink
+              ? { linkedinLink: toLinksValue(enriched.linkedinLink) }
+              : {}),
+            ...(typeof enriched.employees === 'number' &&
+            action.data.employees == null
+              ? { employees: enriched.employees }
+              : {}),
+          },
+        };
+      }
+
+      if (action.kind === 'person') {
+        const name =
+          typeof action.data.name === 'string'
+            ? action.data.name
+            : typeof action.lookup?.name === 'string'
+              ? action.lookup.name
+              : null;
+        const companyName =
+          typeof action.data.companyName === 'string'
+            ? action.data.companyName
+            : typeof action.lookup?.companyName === 'string'
+              ? action.lookup.companyName
+              : undefined;
+        const enriched = enrichment.people.find(
+          (person) =>
+            typeof name === 'string' &&
+            normalizeText(person.name) === normalizeText(name) &&
+            (!companyName ||
+              !person.companyName ||
+              normalizeText(person.companyName) === normalizeText(companyName)),
+        );
+
+        if (!enriched) {
+          return action;
+        }
+
+        return {
+          ...action,
+          data: {
+            ...action.data,
+            ...(enriched.jobTitle && !action.data.jobTitle
+              ? { jobTitle: enriched.jobTitle }
+              : {}),
+            ...(enriched.companyName && !action.data.companyName
+              ? { companyName: enriched.companyName }
+              : {}),
+            ...(enriched.linkedinLink && !action.data.linkedinLink
+              ? { linkedinLink: toLinksValue(enriched.linkedinLink) }
+              : {}),
+            ...(enriched.city && !action.data.city ? { city: enriched.city } : {}),
+          },
+        };
+      }
+
+      return action;
+    }),
+  };
+};
+
+const enrichDraftWithPublicContext = async ({
+  draft,
+  sourceText,
+}: {
+  draft: CrmWriteDraft;
+  sourceText: string;
+}): Promise<CrmWriteDraft> => {
+  const entities = {
+    companies: draft.actions
+      .filter((action) => action.kind === 'company')
+      .map((action) => ({
+        name:
+          typeof action.data.name === 'string'
+            ? action.data.name
+            : action.lookup?.name ?? '',
+      }))
+      .filter((company) => company.name.length > 0),
+    people: draft.actions
+      .filter((action) => action.kind === 'person')
+      .map((action) => ({
+        name:
+          typeof action.data.name === 'string'
+            ? action.data.name
+            : action.lookup?.name ?? '',
+        companyName:
+          typeof action.data.companyName === 'string'
+            ? action.data.companyName
+            : action.lookup?.companyName,
+      }))
+      .filter((person) => person.name.length > 0),
+  };
+
+  if (entities.companies.length === 0 && entities.people.length === 0) {
+    return draft;
+  }
+
+  const enrichment = await callAnthropicStructuredJson<PublicEnrichmentResponse>({
+    systemPrompt: buildPublicEnrichmentSystemPrompt(),
+    userPrompt: buildPublicEnrichmentUserPrompt({
+      sourceText,
+      entities,
+    }),
+    schema: publicEnrichmentSchema,
+    maxTokens: 1200,
+    tools: [buildWebSearchTool()],
+  });
+
+  return mergePublicEnrichmentIntoDraft(draft, enrichment);
+};
+
 const buildAnthropicRequestHeaders = (apiKey: string) => ({
   'anthropic-version': ANTHROPIC_API_VERSION,
   'content-type': 'application/json; charset=utf-8',
@@ -753,19 +1436,20 @@ const buildAnthropicRequestHeaders = (apiKey: string) => ({
 const parseAnthropicTextContent = <TResponse extends Record<string, unknown>>(
   payload: AnthropicMessageResponse,
 ): TResponse | null => {
-  const content = payload.content?.find((block) => block.type === 'text') as
-    | AnthropicTextBlock
-    | undefined;
+  const textBlocks = (payload.content ?? []).filter(
+    (block): block is AnthropicTextBlock =>
+      block.type === 'text' && 'text' in block && typeof block.text === 'string',
+  );
 
-  if (!content?.text) {
-    return null;
+  for (const content of [...textBlocks].reverse()) {
+    try {
+      return JSON.parse(content.text as string) as TResponse;
+    } catch {
+      continue;
+    }
   }
 
-  try {
-    return JSON.parse(content.text) as TResponse;
-  } catch {
-    return null;
-  }
+  return null;
 };
 
 const callAnthropicStructuredJson = async <TResponse extends Record<string, unknown>>({
@@ -774,12 +1458,14 @@ const callAnthropicStructuredJson = async <TResponse extends Record<string, unkn
   schema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
   effort = 'medium',
+  tools,
 }: {
   systemPrompt: string;
   userPrompt: string;
   schema: JsonSchema;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
+  tools?: AnthropicToolDefinition[];
 }): Promise<TResponse | null> => {
   const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
@@ -801,6 +1487,7 @@ const callAnthropicStructuredJson = async <TResponse extends Record<string, unkn
           schema,
         },
       },
+      ...(tools && tools.length > 0 ? { tools } : {}),
       system: systemPrompt,
       messages: [
         {
@@ -887,6 +1574,7 @@ export const classifySlackText = async (
   text: string,
 ): Promise<SlackIntentClassification> => {
   const cleanedText = cleanSlackText(text);
+  const normalized = normalizeText(cleanedText);
   const fallback = buildFallbackClassification(cleanedText);
   const aiResult = await callAnthropicToolInput<SlackIntentClassification>({
     systemPrompt: buildQueryPlannerSystemPrompt(),
@@ -905,10 +1593,11 @@ export const classifySlackText = async (
     ...aiResult,
     detailLevel:
       aiResult.detailLevel === 'DETAILED' ? 'DETAILED' : fallback.detailLevel,
-    timeframe:
-      aiResult.timeframe === 'THIS_MONTH' || aiResult.timeframe === 'RECENT'
-        ? aiResult.timeframe
-        : fallback.timeframe,
+    timeframe: mentionsThisMonth(normalized)
+      ? 'THIS_MONTH'
+      : mentionsRecent(normalized)
+        ? 'RECENT'
+        : 'ALL_TIME',
     focusEntity:
       aiResult.focusEntity === 'COMPANY' ||
       aiResult.focusEntity === 'PERSON' ||
@@ -983,6 +1672,7 @@ export const buildCrmWriteDraft = async (
 ): Promise<CrmWriteDraft> => {
   const cleanedText = cleanSlackText(text);
   const fallback = buildFallbackDraft(cleanedText);
+  const meetingFacts = extractMeetingFacts(cleanedText);
   const candidateContext = await fetchWriteCandidateContext({
     text: cleanedText,
     entityHints: extractEntityHints(cleanedText),
@@ -992,37 +1682,58 @@ export const buildCrmWriteDraft = async (
     userPrompt: buildWriteDraftUserPrompt({
       cleanedText,
       candidateContext,
+      meetingFacts,
     }),
     schema: crmWriteDraftSchema,
     effort: 'medium',
   });
 
   if (!aiResult) {
-    return fallback;
+    return enrichDraftWithPublicContext({
+      draft: groundDraftWithMeetingFacts({
+        draft: fallback,
+        sourceText: cleanedText,
+        candidateContext,
+      }),
+      sourceText: cleanedText,
+    });
   }
 
-  return sanitizeDraft({
-    summary:
-      typeof aiResult.summary === 'string'
-        ? aiResult.summary
-        : fallback.summary,
-    confidence:
-      typeof aiResult.confidence === 'number'
-        ? aiResult.confidence
-        : fallback.confidence,
-    sourceText:
-      typeof aiResult.sourceText === 'string'
-        ? aiResult.sourceText
-        : cleanedText,
-    actions: Array.isArray(aiResult.actions) ? aiResult.actions : fallback.actions,
-    warnings: Array.isArray(aiResult.warnings)
-      ? aiResult.warnings.filter(
-          (warning): warning is string => typeof warning === 'string',
-        )
-      : fallback.warnings,
-    review:
-      aiResult.review && typeof aiResult.review === 'object'
-        ? (aiResult.review as CrmWriteReview)
-        : fallback.review,
-  }, cleanedText);
+  const sanitizedDraft = sanitizeDraft(
+    {
+      summary:
+        typeof aiResult.summary === 'string'
+          ? aiResult.summary
+          : fallback.summary,
+      confidence:
+        typeof aiResult.confidence === 'number'
+          ? aiResult.confidence
+          : fallback.confidence,
+      sourceText:
+        typeof aiResult.sourceText === 'string'
+          ? aiResult.sourceText
+          : cleanedText,
+      actions: Array.isArray(aiResult.actions) ? aiResult.actions : fallback.actions,
+      warnings: Array.isArray(aiResult.warnings)
+        ? aiResult.warnings.filter(
+            (warning): warning is string => typeof warning === 'string',
+          )
+        : fallback.warnings,
+      review:
+        aiResult.review && typeof aiResult.review === 'object'
+          ? (aiResult.review as CrmWriteReview)
+          : fallback.review,
+    },
+    cleanedText,
+  );
+  const groundedDraft = groundDraftWithMeetingFacts({
+    draft: sanitizedDraft,
+    sourceText: cleanedText,
+    candidateContext,
+  });
+
+  return enrichDraftWithPublicContext({
+    draft: groundedDraft,
+    sourceText: cleanedText,
+  });
 };

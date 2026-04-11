@@ -129,6 +129,9 @@ export type BasicCompanyRecord = {
   accountSegment?: string | null;
   businessUnit?: string | null;
   companyStatus?: string | null;
+  domainName?: string | null;
+  linkedinLink?: string | null;
+  employees?: number | null;
 };
 
 export type BasicPersonRecord = {
@@ -139,6 +142,8 @@ export type BasicPersonRecord = {
   jobTitle?: string | null;
   contactRoleType?: string | null;
   companyName?: string | null;
+  linkedinLink?: string | null;
+  city?: string | null;
 };
 
 export type BasicOpportunityRecord = {
@@ -161,6 +166,8 @@ export type BasicTaskRecord = {
   title: string | null;
   createdAt?: string | null;
   status?: string | null;
+  dueAt?: string | null;
+  markdown?: string | null;
 };
 
 export type BasicNoteRecord = {

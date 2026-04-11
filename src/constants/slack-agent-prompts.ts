@@ -180,7 +180,13 @@ Include a review object with overview, opinion, and items.
 actions is an array of { kind, operation, lookup?, data }.
 kind must be one of company, person, opportunity, solution, companyRelationship, opportunityStakeholder, opportunitySolution, note, task.
 operation must be create or update.
-Prefer note and task records when information is incomplete.
+When the meeting note clearly describes a sales opportunity, generate company, person, opportunity, and supporting note/task records together rather than note-only output.
+Populate every grounded field you can justify from the request, candidate context, or public enrichment facts.
+For company actions, fill profile fields like domainName.primaryLinkUrl, linkedinLink.primaryLinkUrl, and employees when grounded.
+For person actions, fill jobTitle and companyName when grounded.
+For opportunity actions, strongly prefer companyName, pointOfContactName, stage, closeDate, primaryVendorCompanyName, and primaryPartnerCompanyName when grounded.
+For note and task actions, include helper fields companyName, pointOfContactName, and opportunityName so the app can link them after creation.
+For task actions, fill dueAt when the note implies a date or deadline.
 `,
     },
     {
@@ -198,11 +204,14 @@ Use Korean in the review overview, opinion, and reasons.
 export const buildWriteDraftUserPrompt = ({
   cleanedText,
   candidateContext,
+  meetingFacts,
 }: {
   cleanedText: string;
   candidateContext: WriteCandidateContext;
+  meetingFacts?: Record<string, unknown>;
 }): string => {
   const compactedCandidates = compactJsonLike(candidateContext) ?? candidateContext;
+  const compactedFacts = compactJsonLike(meetingFacts) ?? meetingFacts ?? {};
 
   return [
     '<instructions>',
@@ -212,6 +221,7 @@ export const buildWriteDraftUserPrompt = ({
     'If you update an existing opportunity, use lookup.name with the exact candidate opportunity name.',
     'If you create a new opportunity, choose a concise Korean title that includes the company or opportunity theme.',
     'The review object must explain what will be written, where it will be written, and why.',
+    'Use the extracted meeting facts as hard grounding. If a fact is present there, prefer to include it in the appropriate CRM field instead of dropping it.',
     '</instructions>',
     '<matching_criteria>',
     '1. Same company is the strongest signal.',
@@ -228,6 +238,45 @@ export const buildWriteDraftUserPrompt = ({
     '</example>',
     '</examples>',
     `<request>${cleanedText}</request>`,
+    `<meeting_facts>${JSON.stringify(compactedFacts)}</meeting_facts>`,
     `<candidate_context>${JSON.stringify(compactedCandidates)}</candidate_context>`,
   ].join('\n');
 };
+
+export const buildPublicEnrichmentSystemPrompt = (): string =>
+  joinSections([
+    {
+      title: 'Base Instructions',
+      content: `
+You enrich CRM company and contact profiles using public web information.
+Only use facts that are explicitly supported by web search results.
+Return only valid JSON.
+`,
+    },
+    {
+      title: 'Safety Rules',
+      content: `
+Only fill profile-style fields such as company website, company LinkedIn, employee count, person LinkedIn, job title, and city.
+Do not invent or infer private personal information.
+Do not create or change deal-internal fields like stage, amount, close date, or next action from web search.
+If evidence is weak or inconsistent, leave the field empty.
+`,
+    },
+  ]);
+
+export const buildPublicEnrichmentUserPrompt = ({
+  sourceText,
+  entities,
+}: {
+  sourceText: string;
+  entities: Record<string, unknown>;
+}): string =>
+  [
+    '<instructions>',
+    'Use the web search tool to look up only the listed company/person profiles.',
+    'Return structured JSON with grounded enrichment fields only.',
+    'For company links, use primaryLinkUrl shape.',
+    '</instructions>',
+    `<source_text>${sourceText}</source_text>`,
+    `<entities>${JSON.stringify(compactJsonLike(entities) ?? entities)}</entities>`,
+  ].join('\n');
