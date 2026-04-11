@@ -57,6 +57,15 @@ describe('App installation', () => {
         id: true,
         name: true,
         universalIdentifier: true,
+        defaultRoleId: true,
+        objects: {
+          id: true,
+          universalIdentifier: true,
+        },
+        logicFunctions: {
+          id: true,
+          universalIdentifier: true,
+        },
       },
     });
 
@@ -66,5 +75,8 @@ describe('App installation', () => {
     );
 
     expect(installedApp).toBeDefined();
+    expect(installedApp?.defaultRoleId).toBeTruthy();
+    expect(installedApp?.objects.length).toBeGreaterThan(0);
+    expect(installedApp?.logicFunctions.length).toBeGreaterThan(0);
   });
 });

@@ -26,6 +26,76 @@ const slackRequestSelection = {
   lastProcessedAt: true,
 } as const;
 
+const parseJsonTextField = (
+  value: unknown,
+): Record<string, unknown> | null => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const serializeJsonTextField = (
+  value: unknown,
+): string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return JSON.stringify(value);
+};
+
+const parseNullableNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizeSlackRequestMutationData = (
+  data: Record<string, unknown>,
+): Record<string, unknown> => {
+  const normalizedData = { ...data };
+
+  if ('draftJson' in normalizedData) {
+    normalizedData.draftJson = serializeJsonTextField(normalizedData.draftJson);
+  }
+
+  if ('resultJson' in normalizedData) {
+    normalizedData.resultJson = serializeJsonTextField(
+      normalizedData.resultJson,
+    );
+  }
+
+  return normalizedData;
+};
+
 const mapSlackRequestNode = (
   node: Record<string, unknown> | null | undefined,
 ): SlackRequestRecord | null => {
@@ -63,15 +133,9 @@ const mapSlackRequestNode = (
       typeof node.processingStatus === 'string'
         ? (node.processingStatus as SlackRequestRecord['processingStatus'])
         : null,
-    confidence: typeof node.confidence === 'number' ? node.confidence : null,
-    draftJson:
-      node.draftJson && typeof node.draftJson === 'object'
-        ? (node.draftJson as Record<string, unknown>)
-        : null,
-    resultJson:
-      node.resultJson && typeof node.resultJson === 'object'
-        ? (node.resultJson as Record<string, unknown>)
-        : null,
+    confidence: parseNullableNumber(node.confidence),
+    draftJson: parseJsonTextField(node.draftJson),
+    resultJson: parseJsonTextField(node.resultJson),
     errorMessage:
       typeof node.errorMessage === 'string' ? node.errorMessage : null,
     dedupeKey: typeof node.dedupeKey === 'string' ? node.dedupeKey : null,
@@ -152,7 +216,9 @@ export const createSlackRequest = async (
   }>({
     createSlackRequest: {
       __args: {
-        data: intake,
+        data: normalizeSlackRequestMutationData(
+          intake as unknown as Record<string, unknown>,
+        ),
       },
       ...slackRequestSelection,
     },
@@ -181,7 +247,7 @@ export const updateSlackRequest = async ({
     updateSlackRequest: {
       __args: {
         id,
-        data,
+        data: normalizeSlackRequestMutationData(data),
       },
       ...slackRequestSelection,
     },
