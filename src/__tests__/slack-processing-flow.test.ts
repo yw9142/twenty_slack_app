@@ -79,7 +79,7 @@ describe('slack processing flow', () => {
 
   it('stores slash commands for async processing instead of running orchestration inline', async () => {
     const response = await handleSlackCommandsRoute({
-      body: 'team_id=T1&channel_id=C1&user_id=U1&text=%EC%A7%88%EC%9D%98&command=%2Fcrm&message_ts=1710000000.000100&response_url=https%3A%2F%2Fhooks.slack.test%2Fcommands%2F1',
+      body: 'team_id=T1&channel_id=C1&user_id=U1&text=%EC%A7%88%EC%9D%98&command=%2Fcrm&trigger_id=trigger-1&response_url=https%3A%2F%2Fhooks.slack.test%2Fcommands%2F1',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
         'x-slack-signature': 'v0=test',
@@ -95,6 +95,7 @@ describe('slack processing flow', () => {
       expect.objectContaining({
         sourceType: 'SLASH_COMMAND',
         processingStatus: 'RECEIVED',
+        dedupeKey: 'SLASH_COMMAND:T1:C1:trigger-1:/crm',
       }),
     );
     expect(processSlackRequest).not.toHaveBeenCalled();

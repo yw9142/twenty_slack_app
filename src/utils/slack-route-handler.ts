@@ -209,7 +209,7 @@ export const handleSlackCommandsRoute = async (
       sourceType: 'SLASH_COMMAND',
       teamId: payload.teamId,
       channelId: payload.channelId,
-      messageTs: payload.messageTs,
+      messageTs: payload.messageTs ?? payload.triggerId ?? payload.responseUrl,
       actionId: payload.command,
     }),
   });
