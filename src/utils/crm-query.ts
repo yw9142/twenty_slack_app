@@ -392,6 +392,93 @@ const formatCurrency = ({
   return `${formatted} ${currencyCode ?? 'KRW'}`;
 };
 
+export const buildMonthlyNewOpinion = ({
+  companyCount,
+  peopleCount,
+  opportunityCount,
+}: {
+  companyCount: number;
+  peopleCount: number;
+  opportunityCount: number;
+}): string => {
+  if (opportunityCount === 0) {
+    return '이번달 신규 영업기회가 없어 신규 발굴 활동 점검이 필요합니다.';
+  }
+
+  if (peopleCount < companyCount) {
+    return '신규 회사 수 대비 담당자 등록이 적어 후속 접점 확보가 필요합니다.';
+  }
+
+  if (opportunityCount >= companyCount) {
+    return '신규 파이프라인 유입은 양호합니다. 상위 기회의 다음 액션을 빠르게 확정하세요.';
+  }
+
+  return '신규 접점은 생기고 있으니, 실제 딜 전환 여부를 이번 주 안에 점검하는 것이 좋습니다.';
+};
+
+export const buildOpportunityOpinion = (
+  opportunity: Pick<
+    BasicOpportunityRecord,
+    | 'name'
+    | 'stage'
+    | 'closeDate'
+    | 'primaryVendorCompanyName'
+    | 'primaryPartnerCompanyName'
+    | 'pointOfContactName'
+  >,
+): string => {
+  const gaps: string[] = [];
+
+  if (!opportunity.primaryVendorCompanyName) {
+    gaps.push('주 벤더사');
+  }
+
+  if (
+    opportunity.stage &&
+    ['QUOTED', 'NEGOTIATION'].includes(opportunity.stage) &&
+    !opportunity.primaryPartnerCompanyName
+  ) {
+    gaps.push('주 파트너사');
+  }
+
+  if (!opportunity.pointOfContactName) {
+    gaps.push('주요 담당자');
+  }
+
+  if (!opportunity.closeDate) {
+    gaps.push('예상 마감일');
+  }
+
+  if (gaps.length === 0) {
+    return '핵심 상업 정보는 비교적 잘 채워져 있습니다. 다음 단계 진입 조건만 점검하면 됩니다.';
+  }
+
+  return `${gaps.join(', ')} 정보 보강이 필요합니다. 이 항목부터 정리한 뒤 다음 액션을 확정하세요.`;
+};
+
+const buildGeneralSummaryOpinion = ({
+  opportunityCount,
+  taskCount,
+}: {
+  opportunityCount: number;
+  taskCount: number;
+}): string => {
+  if (opportunityCount === 0) {
+    return '현재 파이프라인이 비어 있어 신규 기회 발굴 활동을 우선 점검해야 합니다.';
+  }
+
+  if (taskCount > opportunityCount) {
+    return '오픈 작업 수가 많아 후속 우선순위 정리가 필요합니다.';
+  }
+
+  return '파이프라인과 후속 작업 수는 균형적인 편입니다. 상위 딜 중심으로 실행력을 점검하세요.';
+};
+
+const buildRiskOpinion = (count: number): string =>
+  count === 0
+    ? '현재 기준에서는 즉시 보완이 필요한 리스크 딜이 없습니다.'
+    : '견적·협상 단계에서 벤더/파트너 정보가 빈 딜부터 우선 정리하는 것이 좋습니다.';
+
 const countThisMonth = (values: Array<{ createdAt?: string | null }>): number =>
   values.filter((value) => value.createdAt?.startsWith(THIS_MONTH_PREFIX)).length;
 
@@ -447,6 +534,17 @@ const buildMonthlyNewReply = async (): Promise<{
               `• 회사: *${companyCount}건*\n` +
               `• 담당자: *${peopleCount}건*\n` +
               `• 영업기회: *${opportunityCount}건*`,
+          },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*의견*\n${buildMonthlyNewOpinion({
+              companyCount,
+              peopleCount,
+              opportunityCount,
+            })}`,
           },
         },
       ],
@@ -507,6 +605,13 @@ const buildOpportunityStatusReply = async ({
               `• 주요 담당자: ${match.pointOfContactName ?? '미지정'}`,
           },
         },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*의견*\n${buildOpportunityOpinion(match)}`,
+          },
+        },
       ],
     },
     resultJson: {
@@ -554,6 +659,13 @@ const buildRiskReply = async (): Promise<{
                 : `*리스크 영업기회 ${risky.length}건*\n${lines.join('\n')}`,
           },
         },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*의견*\n${buildRiskOpinion(risky.length)}`,
+          },
+        },
       ],
     },
     resultJson: {
@@ -580,6 +692,31 @@ const buildGeneralSummaryReply = async (): Promise<{
       text:
         `현재 CRM 요약입니다. 회사 ${companies.length}건, 담당자 ${people.length}건, ` +
         `영업기회 ${opportunities.length}건, 작업 ${tasks.length}건, 노트 ${notes.length}건입니다.`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `*현재 CRM 요약*\n` +
+              `• 회사: *${companies.length}건*\n` +
+              `• 담당자: *${people.length}건*\n` +
+              `• 영업기회: *${opportunities.length}건*\n` +
+              `• 작업: *${tasks.length}건*\n` +
+              `• 노트: *${notes.length}건*`,
+          },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*의견*\n${buildGeneralSummaryOpinion({
+              opportunityCount: opportunities.length,
+              taskCount: tasks.length,
+            })}`,
+          },
+        },
+      ],
     },
     resultJson: {
       companyCount: companies.length,

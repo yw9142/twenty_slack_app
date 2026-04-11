@@ -20,7 +20,7 @@ import {
   shouldProcessChannel,
   type SlackIntakeDraft,
 } from 'src/utils/slack';
-import { truncate } from 'src/utils/strings';
+import { cleanSlackText, truncate } from 'src/utils/strings';
 
 type RouteBody = Record<string, unknown> | string | null;
 
@@ -62,7 +62,11 @@ const createIntakeName = ({
 }: {
   sourceType: SlackSourceType;
   rawText: string;
-}): string => `${sourceType} - ${truncate(rawText || 'empty request', 60)}`;
+}): string => {
+  const cleaned = cleanSlackText(rawText, { singleLine: true });
+
+  return `${sourceType} - ${truncate(cleaned || 'empty request', 60)}`;
+};
 
 const buildSlackIntakeDraft = ({
   sourceType,
@@ -94,7 +98,7 @@ const buildSlackIntakeDraft = ({
   sourceType,
   slackResponseUrl: responseUrl,
   rawText,
-  normalizedText: rawText.trim(),
+  normalizedText: cleanSlackText(rawText),
   processingStatus: 'RECEIVED',
   dedupeKey,
   receivedAt: nowIso(),

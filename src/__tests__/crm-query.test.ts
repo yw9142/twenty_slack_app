@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildConnectionArgs } from 'src/utils/crm-query';
+import {
+  buildConnectionArgs,
+  buildMonthlyNewOpinion,
+  buildOpportunityOpinion,
+} from 'src/utils/crm-query';
 
 describe('crm query helpers', () => {
   it('builds connection args with first instead of paging', () => {
@@ -22,5 +26,31 @@ describe('crm query helpers', () => {
       },
     });
     expect(args).not.toHaveProperty('paging');
+  });
+
+  it('builds a monthly-new opinion with an actionable recommendation', () => {
+    const opinion = buildMonthlyNewOpinion({
+      companyCount: 3,
+      peopleCount: 1,
+      opportunityCount: 3,
+    });
+
+    expect(opinion).toContain('담당자');
+  });
+
+  it('highlights missing commercial inputs in opportunity opinions', () => {
+    const opinion = buildOpportunityOpinion({
+      id: 'opp-1',
+      name: 'A은행 Nutanix 전환',
+      stage: 'NEGOTIATION',
+      closeDate: null,
+      companyName: 'A은행',
+      primaryVendorCompanyName: null,
+      primaryPartnerCompanyName: null,
+      pointOfContactName: null,
+    });
+
+    expect(opinion).toContain('주 벤더사');
+    expect(opinion).toContain('주 파트너사');
   });
 });

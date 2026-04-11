@@ -114,7 +114,9 @@ export const processSlackRequest = async (
   slackRequest: SlackRequestRecord,
 ): Promise<SlackRequestRecord> => {
   try {
-    const classification = await classifySlackText(slackRequest.rawText ?? '');
+    const requestText =
+      slackRequest.normalizedText ?? slackRequest.rawText ?? '';
+    const classification = await classifySlackText(requestText);
     await updateSlackRequest({
       id: slackRequest.id,
       data: {
@@ -131,7 +133,7 @@ export const processSlackRequest = async (
     if (classification.intentType === 'QUERY') {
       const answer = await answerCrmQuery({
         classification,
-        text: slackRequest.rawText ?? '',
+        text: requestText,
       });
 
       const answeredRequest = await updateSlackRequest({
@@ -152,7 +154,7 @@ export const processSlackRequest = async (
     }
 
     if (classification.intentType === 'WRITE_DRAFT') {
-      const draft = await buildCrmWriteDraft(slackRequest.rawText ?? '');
+      const draft = await buildCrmWriteDraft(requestText);
       const draftedRequest = await updateSlackRequest({
         id: slackRequest.id,
         data: {

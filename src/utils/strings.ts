@@ -1,6 +1,28 @@
 export const normalizeText = (value: string | null | undefined): string =>
   (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
+export const cleanSlackText = (
+  value: string | null | undefined,
+  { singleLine = false }: { singleLine?: boolean } = {},
+): string => {
+  const normalized = (value ?? '')
+    .replace(/<@[A-Z0-9]+>/gi, ' ')
+    .replace(/<![^>]+>/g, ' ')
+    .replace(/^\/[a-z0-9_-]+\s*/i, '')
+    .replace(/\u00a0/g, ' ');
+
+  if (singleLine) {
+    return normalized.trim().replace(/\s+/g, ' ');
+  }
+
+  return normalized
+    .split('\n')
+    .map((line) => line.trim().replace(/\s+/g, ' '))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 export const truncate = (value: string, maxLength: number): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`;
 

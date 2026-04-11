@@ -89,4 +89,16 @@ describe('intelligence fallbacks', () => {
     expect(draft.actions.length).toBeGreaterThan(0);
     expect(draft.actions.some((action) => action.kind === 'note')).toBe(true);
   });
+
+  it('should strip Slack mentions from fallback draft titles and source text', async () => {
+    const draft = await buildCrmWriteDraft(
+      '<@U0AS65R9QHK> A은행에 Nutanix 전환 기회가 생겼고 담당자는 김민수, 5월 말 POC 예정',
+    );
+
+    const noteAction = draft.actions.find((action) => action.kind === 'note');
+
+    expect(draft.sourceText).not.toContain('<@U0AS65R9QHK>');
+    expect(noteAction?.data.title).not.toContain('<@U0AS65R9QHK>');
+    expect(String(noteAction?.data.title ?? '')).not.toContain('Slack 메모 -');
+  });
 });

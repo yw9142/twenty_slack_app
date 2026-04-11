@@ -6,7 +6,12 @@ import type {
   SlackIntentClassification,
 } from 'src/types/slack-agent';
 import { getAnthropicModel, getOptionalEnv } from 'src/utils/env';
-import { normalizeText, truncate, uniqueNonEmpty } from 'src/utils/strings';
+import {
+  cleanSlackText,
+  normalizeText,
+  truncate,
+  uniqueNonEmpty,
+} from 'src/utils/strings';
 
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
@@ -14,6 +19,9 @@ const ANTHROPIC_MAX_TOKENS = 1024;
 
 const containsAny = (value: string, keywords: string[]): boolean =>
   keywords.some((keyword) => value.includes(keyword));
+
+const toSingleLineSlackText = (value: string): string =>
+  cleanSlackText(value, { singleLine: true });
 
 const extractEntityHints = (text: string): EntityHints => {
   const companyMatches = Array.from(
@@ -45,8 +53,9 @@ const extractEntityHints = (text: string): EntityHints => {
 const buildFallbackClassification = (
   text: string,
 ): SlackIntentClassification => {
-  const normalized = normalizeText(text);
-  const entityHints = extractEntityHints(text);
+  const cleanedText = cleanSlackText(text);
+  const normalized = normalizeText(cleanedText);
+  const entityHints = extractEntityHints(cleanedText);
 
   if (
     containsAny(normalized, [
@@ -90,16 +99,23 @@ const buildFallbackClassification = (
 
 const fallbackWriteActions = (text: string): CrmActionRecord[] => {
   const actions: CrmActionRecord[] = [];
-  const entityHints = extractEntityHints(text);
-  const noteTitle = truncate(text.split('\n')[0] ?? 'Slack 메모', 80);
+  const cleanedText = cleanSlackText(text);
+  const entityHints = extractEntityHints(cleanedText);
+  const cleanedSingleLine = toSingleLineSlackText(cleanedText);
+  const noteTitle =
+    entityHints.companies[0] && entityHints.solutions[0]
+      ? `${entityHints.companies[0]} ${entityHints.solutions[0]} 기회 메모`
+      : entityHints.companies[0]
+        ? `${entityHints.companies[0]} 영업 메모`
+        : truncate(cleanedSingleLine || '영업 메모', 50);
 
   actions.push({
     kind: 'note',
     operation: 'create',
     data: {
-      title: `Slack 메모 - ${noteTitle}`,
+      title: noteTitle,
       bodyV2: {
-        markdown: text.trim(),
+        markdown: cleanedText,
         blocknote: null,
       },
     },
@@ -123,10 +139,13 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
       kind: 'task',
       operation: 'create',
       data: {
-        title: `Slack 후속 작업 - ${noteTitle}`,
+        title:
+          entityHints.companies[0]
+            ? `${entityHints.companies[0]} 후속 작업`
+            : `후속 작업 - ${truncate(cleanedSingleLine, 36)}`,
         status: 'TODO',
         bodyV2: {
-          markdown: text.trim(),
+          markdown: cleanedText,
           blocknote: null,
         },
       },
@@ -136,15 +155,90 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
   return actions;
 };
 
-const buildFallbackDraft = (text: string): CrmWriteDraft => ({
-  summary: 'Slack 메모를 기준으로 기본 CRM 반영 초안을 만들었습니다.',
+const buildFallbackDraft = (text: string): CrmWriteDraft => {
+  const cleanedText = cleanSlackText(text);
+
+  return {
+  summary: '정리된 메모를 기준으로 CRM 반영 초안을 만들었습니다.',
   confidence: 0.45,
-  sourceText: text,
-  actions: fallbackWriteActions(text),
+  sourceText: cleanedText,
+  actions: fallbackWriteActions(cleanedText),
   warnings: [
     '자동 추출 초안입니다. 실제 반영 전 Slack 승인 카드에서 반드시 확인하세요.',
   ],
-});
+  };
+};
+
+const sanitizeDraftTextField = (
+  value: unknown,
+  { singleLine = false }: { singleLine?: boolean } = {},
+): unknown => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  return cleanSlackText(value, { singleLine });
+};
+
+const sanitizeDraftAction = (
+  action: CrmActionRecord,
+  sourceText: string,
+): CrmActionRecord => {
+  const nextData = { ...action.data };
+  const cleanedSource = toSingleLineSlackText(sourceText);
+
+  if (typeof nextData.title === 'string') {
+    nextData.title =
+      action.kind === 'note' && nextData.title.startsWith('Slack 메모')
+        ? truncate(cleanedSource || String(nextData.title), 50)
+        : sanitizeDraftTextField(nextData.title, { singleLine: true });
+  }
+
+  if (typeof nextData.name === 'string') {
+    nextData.name = sanitizeDraftTextField(nextData.name, { singleLine: true });
+  }
+
+  if (typeof nextData.body === 'string') {
+    nextData.body = sanitizeDraftTextField(nextData.body);
+  }
+
+  if (
+    nextData.bodyV2 &&
+    typeof nextData.bodyV2 === 'object' &&
+    !Array.isArray(nextData.bodyV2)
+  ) {
+    const bodyV2 = { ...(nextData.bodyV2 as Record<string, unknown>) };
+
+    if (typeof bodyV2.markdown === 'string') {
+      bodyV2.markdown = cleanSlackText(bodyV2.markdown);
+    }
+
+    nextData.bodyV2 = bodyV2;
+  }
+
+  return {
+    ...action,
+    data: nextData,
+  };
+};
+
+const sanitizeDraft = (draft: CrmWriteDraft, sourceText: string): CrmWriteDraft => {
+  const cleanedSourceText = cleanSlackText(
+    typeof draft.sourceText === 'string' ? draft.sourceText : sourceText,
+  );
+
+  return {
+    ...draft,
+    summary: cleanSlackText(draft.summary, { singleLine: true }),
+    sourceText: cleanedSourceText,
+    actions: draft.actions.map((action) =>
+      sanitizeDraftAction(action, cleanedSourceText),
+    ),
+    warnings: draft.warnings.map((warning) =>
+      cleanSlackText(warning, { singleLine: true }),
+    ),
+  };
+};
 
 const callAnthropicJson = async <TResponse extends Record<string, unknown>>({
   systemPrompt,
@@ -210,17 +304,19 @@ const callAnthropicJson = async <TResponse extends Record<string, unknown>>({
 export const classifySlackText = async (
   text: string,
 ): Promise<SlackIntentClassification> => {
-  const fallback = buildFallbackClassification(text);
+  const cleanedText = cleanSlackText(text);
+  const fallback = buildFallbackClassification(cleanedText);
   const aiResult = await callAnthropicJson<SlackIntentClassification>({
     systemPrompt: [
       'You classify Slack messages for a Korean B2B CRM assistant.',
       'Return only valid JSON.',
+      'Ignore Slack mention tags like <@U123>, bot invocation prefixes, and slash command markers.',
       'intentType must be one of QUERY, WRITE_DRAFT, APPROVAL_ACTION, UNKNOWN.',
       'queryCategory must be one of MONTHLY_NEW, OPPORTUNITY_STATUS, RISK_REVIEW, PIPELINE_SUMMARY, RECORD_LOOKUP, GENERAL.',
       'entityHints must contain arrays for companies, people, opportunities, solutions.',
       'Use Korean-friendly summaries.',
     ].join(' '),
-    userPrompt: text,
+    userPrompt: cleanedText,
   });
 
   if (!aiResult) {
@@ -242,27 +338,31 @@ export const classifySlackText = async (
 export const buildCrmWriteDraft = async (
   text: string,
 ): Promise<CrmWriteDraft> => {
-  const fallback = buildFallbackDraft(text);
+  const cleanedText = cleanSlackText(text);
+  const fallback = buildFallbackDraft(cleanedText);
   const aiResult = await callAnthropicJson<CrmWriteDraft>({
     systemPrompt: [
       'You build a CRM write draft for a Korean B2B distributor CRM.',
       'Return only valid JSON.',
+      'Ignore Slack mention tags like <@U123>, bot invocation prefixes, and slash command markers.',
       'Top-level keys: summary, confidence, sourceText, actions, warnings.',
       'actions is an array of { kind, operation, lookup?, data }.',
       'kind must be one of company, person, opportunity, solution, companyRelationship, opportunityStakeholder, opportunitySolution, note, task.',
       'operation must be create or update.',
       'Prefer note and task records when information is incomplete.',
+      'Use concise Korean titles for note and task records.',
+      'Never include raw Slack mention tokens in titles, body text, summaries, or warnings.',
       'Keep field names in English API style.',
       'Use Korean in summary and warnings.',
     ].join(' '),
-    userPrompt: text,
+    userPrompt: cleanedText,
   });
 
   if (!aiResult) {
     return fallback;
   }
 
-  return {
+  return sanitizeDraft({
     summary:
       typeof aiResult.summary === 'string'
         ? aiResult.summary
@@ -274,12 +374,12 @@ export const buildCrmWriteDraft = async (
     sourceText:
       typeof aiResult.sourceText === 'string'
         ? aiResult.sourceText
-        : text,
+        : cleanedText,
     actions: Array.isArray(aiResult.actions) ? aiResult.actions : fallback.actions,
     warnings: Array.isArray(aiResult.warnings)
       ? aiResult.warnings.filter(
           (warning): warning is string => typeof warning === 'string',
         )
       : fallback.warnings,
-  };
+  }, cleanedText);
 };
