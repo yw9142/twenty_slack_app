@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDedupeKey,
+  getSlackVerificationToken,
   parseSlackActionBodyFromRouteBody,
   parseSlackCommandBodyFromRouteBody,
 } from 'src/utils/slack';
@@ -47,5 +48,24 @@ describe('slack utils', () => {
         messageTs: '1710000000.000100',
       }),
     ).toBe('APP_MENTION:T1:C1:1710000000.000100');
+  });
+
+  it('should extract the verification token from interactivity payload strings', () => {
+    const token = getSlackVerificationToken(
+      'payload=%7B%22token%22%3A%22legacy-token%22%2C%22type%22%3A%22block_actions%22%7D',
+    );
+
+    expect(token).toBe('legacy-token');
+  });
+
+  it('should extract the verification token from interactivity payload objects', () => {
+    const token = getSlackVerificationToken({
+      payload: JSON.stringify({
+        token: 'legacy-token',
+        type: 'block_actions',
+      }),
+    });
+
+    expect(token).toBe('legacy-token');
   });
 });

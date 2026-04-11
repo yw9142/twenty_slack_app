@@ -67,6 +67,26 @@ export const getRouteBodyText = (body: RouteBody): string => {
 const getRouteBodyRecord = (body: RouteBody): Record<string, unknown> =>
   body && typeof body === 'object' ? body : {};
 
+const getTokenFromPayloadValue = (payload: unknown): string | undefined => {
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload) as { token?: unknown };
+
+      return typeof parsed.token === 'string' ? parsed.token : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (payload && typeof payload === 'object') {
+    return typeof (payload as { token?: unknown }).token === 'string'
+      ? ((payload as { token?: string }).token ?? undefined)
+      : undefined;
+  }
+
+  return undefined;
+};
+
 export const parseUrlEncodedBody = (bodyText: string): URLSearchParams =>
   new URLSearchParams(bodyText);
 
@@ -163,6 +183,12 @@ export const getSlackVerificationToken = (body: RouteBody): string | undefined =
       return directToken;
     }
 
+    const payloadToken = getTokenFromPayloadValue(params.get('payload'));
+
+    if (payloadToken) {
+      return payloadToken;
+    }
+
     try {
       const parsed = JSON.parse(body) as { token?: unknown };
 
@@ -174,7 +200,11 @@ export const getSlackVerificationToken = (body: RouteBody): string | undefined =
 
   const record = getRouteBodyRecord(body);
 
-  return typeof record.token === 'string' ? record.token : undefined;
+  if (typeof record.token === 'string') {
+    return record.token;
+  }
+
+  return getTokenFromPayloadValue(record.payload);
 };
 
 export const buildDedupeKey = ({
