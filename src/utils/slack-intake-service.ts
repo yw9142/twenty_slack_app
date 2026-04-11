@@ -26,6 +26,11 @@ const slackRequestSelection = {
   lastProcessedAt: true,
 } as const;
 
+type SlackRequestLookupInput = {
+  dedupeKey?: string;
+  id?: string;
+};
+
 const parseJsonTextField = (
   value: unknown,
 ): Record<string, unknown> | null => {
@@ -149,6 +154,36 @@ const mapSlackRequestNode = (
   };
 };
 
+export const buildSlackRequestLookupSelection = ({
+  dedupeKey,
+  id,
+}: SlackRequestLookupInput) => {
+  const filter: Record<string, { eq: string }> = {};
+
+  if (dedupeKey) {
+    filter.dedupeKey = {
+      eq: dedupeKey,
+    };
+  }
+
+  if (id) {
+    filter.id = {
+      eq: id,
+    };
+  }
+
+  return {
+    slackRequests: {
+      __args: {
+        filter,
+      },
+      edges: {
+        node: slackRequestSelection,
+      },
+    },
+  };
+};
+
 export const findSlackRequestByDedupeKey = async (
   dedupeKey: string,
 ): Promise<SlackRequestRecord | null> => {
@@ -157,23 +192,11 @@ export const findSlackRequestByDedupeKey = async (
     slackRequests?: {
       edges: Array<{ node: Record<string, unknown> }>;
     };
-  }>({
-    slackRequests: {
-      __args: {
-        filter: {
-          dedupeKey: {
-            eq: dedupeKey,
-          },
-        },
-        paging: {
-          first: 1,
-        },
-      },
-      edges: {
-        node: slackRequestSelection,
-      },
-    },
-  });
+  }>(
+    buildSlackRequestLookupSelection({
+      dedupeKey,
+    }),
+  );
 
   return mapSlackRequestNode(response.slackRequests?.edges[0]?.node);
 };
@@ -186,23 +209,11 @@ export const findSlackRequestById = async (
     slackRequests?: {
       edges: Array<{ node: Record<string, unknown> }>;
     };
-  }>({
-    slackRequests: {
-      __args: {
-        filter: {
-          id: {
-            eq: id,
-          },
-        },
-        paging: {
-          first: 1,
-        },
-      },
-      edges: {
-        node: slackRequestSelection,
-      },
-    },
-  });
+  }>(
+    buildSlackRequestLookupSelection({
+      id,
+    }),
+  );
 
   return mapSlackRequestNode(response.slackRequests?.edges[0]?.node);
 };
