@@ -266,6 +266,63 @@ const containsAny = (value: string, keywords: string[]): boolean =>
 const toSingleLineSlackText = (value: string): string =>
   cleanSlackText(value, { singleLine: true });
 
+const COMPANY_STOPWORDS = new Set([
+  '관련해서',
+  '그대로',
+  '고객',
+  '고객사',
+  '회사',
+  '오늘',
+  '이번',
+  '기존에',
+  '현재',
+  '후속',
+  '미팅',
+]);
+
+const PERSON_PREFIX_PATTERN =
+  /^(?:담당자는?|실무\s*담당자는?|의사결정자는?|참석자는?|그대로)\s+/;
+const PERSON_TITLE_PATTERN =
+  /\s*(?:부장|차장|팀장|책임|이사|매니저|본부장|실장|대리|과장|상무|전무|대표)(?:이다|입니다)?$/;
+
+const normalizeEntityToken = (value: string): string =>
+  cleanSlackText(value, { singleLine: true })
+    .replace(/[“”"'`()[\]{}<>]/g, ' ')
+    .replace(/[,:;!?]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const sanitizeCompanyName = (value: string): string | null => {
+  const normalized = normalizeEntityToken(value).replace(
+    /^(?:오늘|이번|기존에|현재|후속|관련해서|그대로)\s+/,
+    '',
+  );
+
+  if (normalized.length < 2 || COMPANY_STOPWORDS.has(normalized)) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const sanitizePersonName = (value: string): string | null => {
+  const normalized = normalizeEntityToken(value)
+    .replace(PERSON_PREFIX_PATTERN, '')
+    .replace(PERSON_TITLE_PATTERN, '')
+    .trim();
+
+  return normalized.length >= 2 ? normalized : null;
+};
+
+const collectMatches = (
+  text: string,
+  pattern: RegExp,
+  sanitizer: (value: string) => string | null,
+): string[] =>
+  Array.from(text.matchAll(pattern))
+    .map((match) => sanitizer(match[1] ?? ''))
+    .filter((value): value is string => Boolean(value));
+
 const determineDetailLevel = (normalized: string): QueryDetailLevel =>
   containsAny(normalized, [
     '상세',
@@ -321,17 +378,40 @@ const determineFocusEntity = (
 };
 
 const extractEntityHints = (text: string): EntityHints => {
-  const companyMatches = Array.from(
-    text.matchAll(/([A-Za-z0-9가-힣&._-]{2,})(?:\s*)(?:회사|고객|고객사|벤더|파트너)/g),
-  ).map((match) => match[1] ?? '');
+  const companyMatches = [
+    ...collectMatches(
+      text,
+      /([A-Za-z0-9가-힣&._-]{2,})(?:\s*)(?:회사|고객|고객사|벤더|파트너)/g,
+      sanitizeCompanyName,
+    ),
+    ...collectMatches(
+      text,
+      /([A-Za-z0-9가-힣&._-]{2,}(?:은행|금융|증권|보험|카드|전자|제조|물산|건설|화학|반도체|그룹))/g,
+      sanitizeCompanyName,
+    ),
+    ...collectMatches(
+      text,
+      /([A-Za-z0-9가-힣&._-]{2,})\s+(?:인프라팀|보안팀|설계본부|본부장|운영총괄|영업팀|구매팀|총괄|실무팀)/g,
+      sanitizeCompanyName,
+    ),
+  ];
 
   const opportunityMatches = Array.from(
     text.matchAll(/([A-Za-z0-9가-힣&._\-/]{2,})(?:\s*)(?:딜|기회|영업기회|PoC|견적)/g),
   ).map((match) => match[1] ?? '');
 
-  const personMatches = Array.from(
-    text.matchAll(/([A-Za-z가-힣]{2,}(?:\s+[A-Za-z가-힣]{2,})?)(?:\s*)(?:담당자|매니저|이사|부장)/g),
-  ).map((match) => match[1] ?? '');
+  const personMatches = [
+    ...collectMatches(
+      text,
+      /(?:담당자는?|실무\s*담당자는?|의사결정자는?)\s*((?:그대로\s+)?[A-Za-z가-힣]{2,}(?:\s+[A-Za-z가-힣]{2,})?)(?:\s*)(?:부장|차장|팀장|책임|이사|매니저|본부장)?/g,
+      sanitizePersonName,
+    ),
+    ...collectMatches(
+      text,
+      /([A-Za-z가-힣]{2,}(?:\s+[A-Za-z가-힣]{2,})?)(?:\s*)(?:담당자|매니저|이사|부장|차장|팀장|책임|본부장)/g,
+      sanitizePersonName,
+    ),
+  ];
 
   const solutionMatches = Array.from(
     text.matchAll(
@@ -557,6 +637,28 @@ const sanitizeDraftAction = (
 
   if (typeof nextData.name === 'string') {
     nextData.name = sanitizeDraftTextField(nextData.name, { singleLine: true });
+  }
+
+  if (typeof nextData.companyName === 'string') {
+    const sanitizedCompanyName = sanitizeCompanyName(nextData.companyName);
+
+    if (sanitizedCompanyName) {
+      nextData.companyName = sanitizedCompanyName;
+    } else {
+      delete nextData.companyName;
+    }
+  }
+
+  if (typeof nextData.pointOfContactName === 'string') {
+    const sanitizedPointOfContactName = sanitizePersonName(
+      nextData.pointOfContactName,
+    );
+
+    if (sanitizedPointOfContactName) {
+      nextData.pointOfContactName = sanitizedPointOfContactName;
+    } else {
+      delete nextData.pointOfContactName;
+    }
   }
 
   if (typeof nextData.body === 'string') {

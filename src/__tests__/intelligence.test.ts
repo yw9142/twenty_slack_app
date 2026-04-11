@@ -137,6 +137,22 @@ describe('intelligence fallbacks', () => {
     expect(String(noteAction?.data.title ?? '')).not.toContain('Slack 메모 -');
   });
 
+  it('should extract meaningful company and contact names in fallback drafts', async () => {
+    const draft = await buildCrmWriteDraft(
+      '오늘 A은행 인프라팀 후속 미팅 완료. 기존에 검토 중이던 Nutanix VDI 전환 건 관련해서 고객 반응이 긍정적이었고, 담당자는 그대로 김민수 부장이다.',
+    );
+
+    const companyAction = draft.actions.find((action) => action.kind === 'company');
+    const opportunityAction = draft.actions.find(
+      (action) => action.kind === 'opportunity',
+    );
+
+    expect(companyAction?.data.name).toBe('A은행');
+    expect(opportunityAction?.data.companyName).toBe('A은행');
+    expect(opportunityAction?.data.pointOfContactName).toBe('김민수');
+    expect(String(opportunityAction?.data.name ?? '')).not.toContain('관련해서');
+  });
+
   it('should synthesize detailed CRM replies via Anthropic structured outputs', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
 

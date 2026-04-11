@@ -79,6 +79,13 @@ const ENTITY_CONFIG: Record<EntityKind, EntityConfig> = {
 const normalizeLookupValue = (value: unknown): string | null =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 
+const HELPER_LOOKUP_FIELDS = [
+  'companyName',
+  'pointOfContactName',
+  'primaryVendorCompanyName',
+  'primaryPartnerCompanyName',
+] as const;
+
 const lookupCompanyIdByName = async (name: string): Promise<string | null> => {
   const companies = await fetchCompanies();
   const match = companies.find(
@@ -181,6 +188,10 @@ const normalizeEntityData = async (
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> => {
   const nextData = await hydrateCommonReferenceIds(data);
+
+  for (const field of HELPER_LOOKUP_FIELDS) {
+    delete nextData[field];
+  }
 
   if (kind === 'person') {
     const nameValue = normalizeLookupValue(nextData.name);
