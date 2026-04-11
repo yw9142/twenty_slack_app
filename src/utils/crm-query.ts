@@ -8,6 +8,7 @@ import type {
   SlackReply,
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
+import { synthesizeCrmQueryReply } from 'src/utils/intelligence';
 import { normalizeText } from 'src/utils/strings';
 
 const THIS_MONTH_PREFIX = new Date().toISOString().slice(0, 7);
@@ -392,6 +393,63 @@ const formatCurrency = ({
   return `${formatted} ${currencyCode ?? 'KRW'}`;
 };
 
+const sortNewestFirst = <T extends { createdAt?: string | null }>(items: T[]): T[] =>
+  [...items].sort((left, right) =>
+    (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
+  );
+
+const limitItems = <T>(items: T[], limit: number): T[] => items.slice(0, limit);
+
+const toOpportunityContext = (opportunity: BasicOpportunityRecord) => ({
+  name: opportunity.name,
+  companyName: opportunity.companyName ?? '미지정',
+  pointOfContactName: opportunity.pointOfContactName ?? '미지정',
+  stage: opportunity.stage ?? '미입력',
+  amount: formatCurrency(opportunity),
+  closeDate: opportunity.closeDate ?? '미입력',
+  primaryVendorCompanyName: opportunity.primaryVendorCompanyName ?? '미지정',
+  primaryPartnerCompanyName: opportunity.primaryPartnerCompanyName ?? '미지정',
+  createdAt: opportunity.createdAt ?? null,
+  updatedAt: opportunity.updatedAt ?? null,
+});
+
+const toCompanyContext = (company: BasicCompanyRecord) => ({
+  name: company.name ?? '이름 미입력',
+  accountSegment: company.accountSegment ?? '미입력',
+  businessUnit: company.businessUnit ?? '미입력',
+  companyStatus: company.companyStatus ?? '미입력',
+  createdAt: company.createdAt ?? null,
+});
+
+const toPersonContext = (person: BasicPersonRecord) => ({
+  fullName: person.fullName || '이름 미입력',
+  companyName: person.companyName ?? '미지정',
+  primaryEmail: person.primaryEmail ?? '미입력',
+  jobTitle: person.jobTitle ?? '미입력',
+  contactRoleType: person.contactRoleType ?? '미입력',
+  createdAt: person.createdAt ?? null,
+});
+
+const maybeSynthesizeReply = async ({
+  requestText,
+  classification,
+  crmContext,
+  fallbackReply,
+}: {
+  requestText: string;
+  classification: SlackIntentClassification;
+  crmContext: Record<string, unknown>;
+  fallbackReply: SlackReply;
+}): Promise<SlackReply> => {
+  const synthesized = await synthesizeCrmQueryReply({
+    requestText,
+    classification,
+    crmContext,
+  });
+
+  return synthesized ?? fallbackReply;
+};
+
 export const buildMonthlyNewOpinion = ({
   companyCount,
   peopleCount,
@@ -507,7 +565,13 @@ const findBestOpportunityMatch = (
   );
 };
 
-const buildMonthlyNewReply = async (): Promise<{
+const buildMonthlyNewReply = async ({
+  classification,
+  text,
+}: {
+  classification: SlackIntentClassification;
+  text: string;
+}): Promise<{
   reply: SlackReply;
   resultJson: Record<string, unknown>;
 }> => {
@@ -520,40 +584,71 @@ const buildMonthlyNewReply = async (): Promise<{
   const companyCount = countThisMonth(companies);
   const peopleCount = countThisMonth(people);
   const opportunityCount = countThisMonth(opportunities);
+  const monthlyCompanies = sortNewestFirst(
+    companies.filter((company) => company.createdAt?.startsWith(THIS_MONTH_PREFIX)),
+  );
+  const monthlyPeople = sortNewestFirst(
+    people.filter((person) => person.createdAt?.startsWith(THIS_MONTH_PREFIX)),
+  );
+  const monthlyOpportunities = sortNewestFirst(
+    opportunities.filter((opportunity) =>
+      opportunity.createdAt?.startsWith(THIS_MONTH_PREFIX),
+    ),
+  );
+  const detailLimit = classification.detailLevel === 'DETAILED' ? 20 : 8;
+  const resultJson = {
+    queryCategory: classification.queryCategory,
+    detailLevel: classification.detailLevel,
+    timeframe: classification.timeframe,
+    companyCount,
+    peopleCount,
+    opportunityCount,
+    companies: limitItems(monthlyCompanies.map(toCompanyContext), detailLimit),
+    people: limitItems(monthlyPeople.map(toPersonContext), detailLimit),
+    opportunities: limitItems(
+      monthlyOpportunities.map(toOpportunityContext),
+      detailLimit,
+    ),
+  };
+  const fallbackReply = {
+    text: `이번달 신규 현황입니다. 회사 ${companyCount}건, 담당자 ${peopleCount}건, 영업기회 ${opportunityCount}건입니다.`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            `*이번달 신규 현황*\n` +
+            `• 회사: *${companyCount}건*\n` +
+            `• 담당자: *${peopleCount}건*\n` +
+            `• 영업기회: *${opportunityCount}건*`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*의견*\n${buildMonthlyNewOpinion({
+            companyCount,
+            peopleCount,
+            opportunityCount,
+          })}`,
+        },
+      },
+    ],
+  } satisfies SlackReply;
 
   return {
-    reply: {
-      text: `이번달 신규 현황입니다. 회사 ${companyCount}건, 담당자 ${peopleCount}건, 영업기회 ${opportunityCount}건입니다.`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text:
-              `*이번달 신규 현황*\n` +
-              `• 회사: *${companyCount}건*\n` +
-              `• 담당자: *${peopleCount}건*\n` +
-              `• 영업기회: *${opportunityCount}건*`,
-          },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*의견*\n${buildMonthlyNewOpinion({
-              companyCount,
-              peopleCount,
-              opportunityCount,
-            })}`,
-          },
-        },
-      ],
-    },
-    resultJson: {
-      companyCount,
-      peopleCount,
-      opportunityCount,
-    },
+    reply: await maybeSynthesizeReply({
+      requestText: text,
+      classification,
+      crmContext: {
+        queryLabel: '이번달 신규 현황',
+        ...resultJson,
+      },
+      fallbackReply,
+    }),
+    resultJson,
   };
 };
 
@@ -581,47 +676,64 @@ const buildOpportunityStatusReply = async ({
     };
   }
 
+  const resultJson = {
+    found: true,
+    opportunity: toOpportunityContext(match),
+  };
+  const fallbackReply = {
+    text:
+      `${match.name} 상태입니다. ` +
+      `단계 ${match.stage ?? '미입력'}, ` +
+      `엔드고객 ${match.companyName ?? '미지정'}, ` +
+      `주 벤더사 ${match.primaryVendorCompanyName ?? '미지정'}, ` +
+      `주 파트너사 ${match.primaryPartnerCompanyName ?? '미지정'}.`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            `*${match.name}*\n` +
+            `• 단계: ${match.stage ?? '미입력'}\n` +
+            `• 엔드고객: ${match.companyName ?? '미지정'}\n` +
+            `• 주 벤더사: ${match.primaryVendorCompanyName ?? '미지정'}\n` +
+            `• 주 파트너사: ${match.primaryPartnerCompanyName ?? '미지정'}\n` +
+            `• 예상 금액: ${formatCurrency(match)}\n` +
+            `• 예상 마감일: ${match.closeDate ?? '미입력'}\n` +
+            `• 주요 담당자: ${match.pointOfContactName ?? '미지정'}`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*의견*\n${buildOpportunityOpinion(match)}`,
+        },
+      },
+    ],
+  } satisfies SlackReply;
+
   return {
-    reply: {
-      text:
-        `${match.name} 상태입니다. ` +
-        `단계 ${match.stage ?? '미입력'}, ` +
-        `엔드고객 ${match.companyName ?? '미지정'}, ` +
-        `주 벤더사 ${match.primaryVendorCompanyName ?? '미지정'}, ` +
-        `주 파트너사 ${match.primaryPartnerCompanyName ?? '미지정'}.`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text:
-              `*${match.name}*\n` +
-              `• 단계: ${match.stage ?? '미입력'}\n` +
-              `• 엔드고객: ${match.companyName ?? '미지정'}\n` +
-              `• 주 벤더사: ${match.primaryVendorCompanyName ?? '미지정'}\n` +
-              `• 주 파트너사: ${match.primaryPartnerCompanyName ?? '미지정'}\n` +
-              `• 예상 금액: ${formatCurrency(match)}\n` +
-              `• 예상 마감일: ${match.closeDate ?? '미입력'}\n` +
-              `• 주요 담당자: ${match.pointOfContactName ?? '미지정'}`,
-          },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*의견*\n${buildOpportunityOpinion(match)}`,
-          },
-        },
-      ],
-    },
-    resultJson: {
-      found: true,
-      opportunity: match,
-    },
+    reply: await maybeSynthesizeReply({
+      requestText: text,
+      classification,
+      crmContext: {
+        queryLabel: '영업기회 상태',
+        ...resultJson,
+      },
+      fallbackReply,
+    }),
+    resultJson,
   };
 };
 
-const buildRiskReply = async (): Promise<{
+const buildRiskReply = async ({
+  classification,
+  text,
+}: {
+  classification: SlackIntentClassification;
+  text: string;
+}): Promise<{
   reply: SlackReply;
   resultJson: Record<string, unknown>;
 }> => {
@@ -641,41 +753,60 @@ const buildRiskReply = async (): Promise<{
     (opportunity) =>
       `• ${opportunity.name} / 단계 ${opportunity.stage ?? '미입력'} / 벤더 ${opportunity.primaryVendorCompanyName ?? '미지정'} / 파트너 ${opportunity.primaryPartnerCompanyName ?? '미지정'}`,
   );
+  const resultJson = {
+    count: risky.length,
+    opportunities: limitItems(
+      risky.map(toOpportunityContext),
+      classification.detailLevel === 'DETAILED' ? 20 : 8,
+    ),
+  };
+  const fallbackReply = {
+    text:
+      risky.length === 0
+        ? '현재 규칙 기준으로 감지된 리스크 영업기회가 없습니다.'
+        : `리스크 영업기회 ${risky.length}건을 찾았습니다.`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            risky.length === 0
+              ? '*리스크 영업기회가 없습니다.*'
+              : `*리스크 영업기회 ${risky.length}건*\n${lines.join('\n')}`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*의견*\n${buildRiskOpinion(risky.length)}`,
+        },
+      },
+    ],
+  } satisfies SlackReply;
 
   return {
-    reply: {
-      text:
-        risky.length === 0
-          ? '현재 규칙 기준으로 감지된 리스크 영업기회가 없습니다.'
-          : `리스크 영업기회 ${risky.length}건을 찾았습니다.`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text:
-              risky.length === 0
-                ? '*리스크 영업기회가 없습니다.*'
-                : `*리스크 영업기회 ${risky.length}건*\n${lines.join('\n')}`,
-          },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*의견*\n${buildRiskOpinion(risky.length)}`,
-          },
-        },
-      ],
-    },
-    resultJson: {
-      count: risky.length,
-      opportunities: risky,
-    },
+    reply: await maybeSynthesizeReply({
+      requestText: text,
+      classification,
+      crmContext: {
+        queryLabel: '리스크 영업기회',
+        ...resultJson,
+      },
+      fallbackReply,
+    }),
+    resultJson,
   };
 };
 
-const buildGeneralSummaryReply = async (): Promise<{
+const buildGeneralSummaryReply = async ({
+  classification,
+  text,
+}: {
+  classification: SlackIntentClassification;
+  text: string;
+}): Promise<{
   reply: SlackReply;
   resultJson: Record<string, unknown>;
 }> => {
@@ -686,45 +817,75 @@ const buildGeneralSummaryReply = async (): Promise<{
     fetchTasks(),
     fetchNotes(),
   ]);
+  const resultJson = {
+    companyCount: companies.length,
+    peopleCount: people.length,
+    opportunityCount: opportunities.length,
+    taskCount: tasks.length,
+    noteCount: notes.length,
+    topOpportunities: limitItems(
+      sortNewestFirst(opportunities).map(toOpportunityContext),
+      classification.detailLevel === 'DETAILED' ? 12 : 6,
+    ),
+    recentTasks: limitItems(
+      sortNewestFirst(tasks).map((task) => ({
+        title: task.title ?? '제목 미입력',
+        status: task.status ?? '미입력',
+        createdAt: task.createdAt ?? null,
+      })),
+      6,
+    ),
+    recentNotes: limitItems(
+      sortNewestFirst(notes).map((note) => ({
+        title: note.title ?? '제목 미입력',
+        markdown: note.markdown ?? '',
+        createdAt: note.createdAt ?? null,
+      })),
+      4,
+    ),
+  };
+  const fallbackReply = {
+    text:
+      `현재 CRM 요약입니다. 회사 ${companies.length}건, 담당자 ${people.length}건, ` +
+      `영업기회 ${opportunities.length}건, 작업 ${tasks.length}건, 노트 ${notes.length}건입니다.`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            `*현재 CRM 요약*\n` +
+            `• 회사: *${companies.length}건*\n` +
+            `• 담당자: *${people.length}건*\n` +
+            `• 영업기회: *${opportunities.length}건*\n` +
+            `• 작업: *${tasks.length}건*\n` +
+            `• 노트: *${notes.length}건*`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*의견*\n${buildGeneralSummaryOpinion({
+            opportunityCount: opportunities.length,
+            taskCount: tasks.length,
+          })}`,
+        },
+      },
+    ],
+  } satisfies SlackReply;
 
   return {
-    reply: {
-      text:
-        `현재 CRM 요약입니다. 회사 ${companies.length}건, 담당자 ${people.length}건, ` +
-        `영업기회 ${opportunities.length}건, 작업 ${tasks.length}건, 노트 ${notes.length}건입니다.`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text:
-              `*현재 CRM 요약*\n` +
-              `• 회사: *${companies.length}건*\n` +
-              `• 담당자: *${people.length}건*\n` +
-              `• 영업기회: *${opportunities.length}건*\n` +
-              `• 작업: *${tasks.length}건*\n` +
-              `• 노트: *${notes.length}건*`,
-          },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*의견*\n${buildGeneralSummaryOpinion({
-              opportunityCount: opportunities.length,
-              taskCount: tasks.length,
-            })}`,
-          },
-        },
-      ],
-    },
-    resultJson: {
-      companyCount: companies.length,
-      peopleCount: people.length,
-      opportunityCount: opportunities.length,
-      taskCount: tasks.length,
-      noteCount: notes.length,
-    },
+    reply: await maybeSynthesizeReply({
+      requestText: text,
+      classification,
+      crmContext: {
+        queryLabel: '현재 CRM 요약',
+        ...resultJson,
+      },
+      fallbackReply,
+    }),
+    resultJson,
   };
 };
 
@@ -739,7 +900,7 @@ export const answerCrmQuery = async ({
   resultJson: Record<string, unknown>;
 }> => {
   if (classification.queryCategory === 'MONTHLY_NEW') {
-    return buildMonthlyNewReply();
+    return buildMonthlyNewReply({ classification, text });
   }
 
   if (
@@ -750,8 +911,8 @@ export const answerCrmQuery = async ({
   }
 
   if (classification.queryCategory === 'RISK_REVIEW') {
-    return buildRiskReply();
+    return buildRiskReply({ classification, text });
   }
 
-  return buildGeneralSummaryReply();
+  return buildGeneralSummaryReply({ classification, text });
 };

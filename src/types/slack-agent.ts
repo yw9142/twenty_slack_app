@@ -32,11 +32,26 @@ export type QueryCategory =
   | 'RECORD_LOOKUP'
   | 'GENERAL';
 
+export type QueryDetailLevel = 'SUMMARY' | 'DETAILED';
+
+export type QueryTimeframe = 'THIS_MONTH' | 'RECENT' | 'ALL_TIME';
+
+export type QueryFocusEntity =
+  | 'GENERAL'
+  | 'COMPANY'
+  | 'PERSON'
+  | 'OPPORTUNITY'
+  | 'TASK'
+  | 'NOTE';
+
 export type SlackIntentClassification = {
   intentType: IntentType;
   confidence: number;
   summary: string;
   queryCategory: QueryCategory;
+  detailLevel: QueryDetailLevel;
+  timeframe: QueryTimeframe;
+  focusEntity: QueryFocusEntity;
   entityHints: EntityHints;
 };
 
