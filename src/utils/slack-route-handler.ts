@@ -104,19 +104,18 @@ export const handleSlackEventsRoute = async (
   event: RoutePayload<RouteBody>,
 ): Promise<Record<string, unknown>> => {
   const rawBody = getRouteBodyText(event.body);
-
-  if (!verifyRequest({ event, rawBody })) {
-    return {
-      ok: false,
-      message: 'Invalid Slack signature',
-    };
-  }
-
   const envelope = parseSlackEventEnvelope(event.body);
 
   if (envelope.type === 'url_verification') {
     return {
       challenge: envelope.challenge ?? '',
+    };
+  }
+
+  if (!verifyRequest({ event, rawBody })) {
+    return {
+      ok: false,
+      message: 'Invalid Slack signature',
     };
   }
 
