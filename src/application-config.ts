@@ -11,6 +11,44 @@ export default defineApplication({
   universalIdentifier: APPLICATION_UNIVERSAL_IDENTIFIER,
   displayName: APP_DISPLAY_NAME,
   description: APP_DESCRIPTION,
+  icon: 'IconBrandSlack',
+  author: 'Daou Data Virtualization Division Demo',
+  category: 'Automation',
+  logoUrl: 'public/logo.svg',
+  screenshots: [
+    'public/screenshot-overview.svg',
+    'public/screenshot-slack-flow.svg',
+  ],
+  websiteUrl: 'https://www.daoudata.co.kr',
+  emailSupport: 'demo@daoudata.local',
+  issueReportUrl: 'https://github.com/yw9142/twenty_slack_app/issues',
+  aboutDescription: `
+# 다우 Slack Agent
+
+다우 Slack Agent는 Slack에서 올라오는 한국어 영업 대화를 분석해 Twenty CRM에 맞는 조회 응답, 입력 초안, 승인 기반 반영 흐름을 제공하는 데모 앱입니다.
+
+## 이 앱이 하는 일
+
+- Slack 멘션과 \`/crm\` 커맨드를 받아 CRM 질의와 입력 요청으로 분류합니다.
+- 회사, 담당자, 영업기회, 솔루션 중심으로 조회 응답을 생성합니다.
+- 자유 텍스트 메모를 CRM 반영 초안으로 구조화하고 Slack 승인 후 적용합니다.
+- Slack 요청을 \`Slack 요청\` 운영 객체에 저장해 승인 대기, 오류, 처리 이력을 추적합니다.
+- 일간 영업기회 점검, 단계 점검, 주간 브리핑, 월간 업셀 후보 분석 로직을 제공합니다.
+
+## 데모 시나리오
+
+1. Slack에서 "이번달 신규 영업기회 알려줘" 같은 질문을 보냅니다.
+2. 앱이 Twenty 데이터를 조회해 한국어 요약으로 답변합니다.
+3. Slack에서 "미래금융이 Citrix VDI 검토 중, 에이맥스 공동영업" 같은 메모를 올립니다.
+4. 앱이 회사/담당자/영업기회/솔루션 초안을 만들고 승인 카드를 보냅니다.
+5. 승인하면 Twenty CRM에 구조화된 데이터가 반영됩니다.
+
+## 운영 포인트
+
+- 승인 전에는 실제 CRM 데이터를 변경하지 않습니다.
+- Slack 요청 이력을 별도 객체로 남겨 감사와 운영 추적이 가능합니다.
+- 서버 변수로 Slack/OpenAI 키를 분리해 배포 환경에서 안전하게 관리합니다.
+`,
   applicationVariables: {
     ALLOWED_CHANNEL_IDS: {
       universalIdentifier: '9489113c-eee1-4daa-b515-d873d107b2f0',

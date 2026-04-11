@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" fill="#f8fafc"/>
+  <rect x="36" y="36" width="1128" height="648" rx="28" fill="#ffffff" stroke="#dbe4f0"/>
+  <rect x="72" y="72" width="220" height="576" rx="20" fill="#0f172a"/>
+  <text x="108" y="126" font-size="28" font-family="Arial, sans-serif" fill="#f8fafc">Daou Slack Agent</text>
+  <rect x="108" y="164" width="148" height="36" rx="12" fill="#1d4ed8"/>
+  <text x="126" y="188" font-size="18" font-family="Arial, sans-serif" fill="#ffffff">Slack 요청</text>
+  <rect x="324" y="72" width="804" height="86" rx="20" fill="#e2e8f0"/>
+  <text x="356" y="126" font-size="30" font-family="Arial, sans-serif" fill="#0f172a">Slack x Twenty 영업 자동화 개요</text>
+  <rect x="324" y="190" width="248" height="128" rx="20" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="352" y="236" font-size="22" font-family="Arial, sans-serif" fill="#1d4ed8">조회 응답</text>
+  <text x="352" y="274" font-size="18" font-family="Arial, sans-serif" fill="#334155">이번달 신규 영업기회</text>
+  <text x="352" y="300" font-size="18" font-family="Arial, sans-serif" fill="#334155">리스크 딜 요약</text>
+  <rect x="602" y="190" width="248" height="128" rx="20" fill="#f5f3ff" stroke="#d8b4fe"/>
+  <text x="630" y="236" font-size="22" font-family="Arial, sans-serif" fill="#7c3aed">쓰기 초안</text>
+  <text x="630" y="274" font-size="18" font-family="Arial, sans-serif" fill="#334155">회사/담당자/영업기회 구조화</text>
+  <text x="630" y="300" font-size="18" font-family="Arial, sans-serif" fill="#334155">Slack 승인 카드</text>
+  <rect x="880" y="190" width="248" height="128" rx="20" fill="#ecfdf5" stroke="#86efac"/>
+  <text x="908" y="236" font-size="22" font-family="Arial, sans-serif" fill="#15803d">운영 자동화</text>
+  <text x="908" y="274" font-size="18" font-family="Arial, sans-serif" fill="#334155">일간 건강도 점검</text>
+  <text x="908" y="300" font-size="18" font-family="Arial, sans-serif" fill="#334155">주간 브리핑</text>
+  <rect x="324" y="352" width="804" height="260" rx="24" fill="#0f172a"/>
+  <text x="356" y="404" font-size="26" font-family="Arial, sans-serif" fill="#f8fafc">데모 흐름</text>
+  <rect x="356" y="438" width="164" height="124" rx="18" fill="#36C5F0"/>
+  <text x="384" y="500" font-size="22" font-family="Arial, sans-serif" fill="#082f49">Slack 입력</text>
+  <rect x="548" y="438" width="164" height="124" rx="18" fill="#ffffff"/>
+  <text x="576" y="500" font-size="22" font-family="Arial, sans-serif" fill="#111827">AI 구조화</text>
+  <rect x="740" y="438" width="164" height="124" rx="18" fill="#ffffff"/>
+  <text x="760" y="500" font-size="22" font-family="Arial, sans-serif" fill="#111827">승인 대기</text>
+  <rect x="932" y="438" width="164" height="124" rx="18" fill="#2EB67D"/>
+  <text x="964" y="500" font-size="22" font-family="Arial, sans-serif" fill="#052e16">CRM 반영</text>
+  <path d="M520 500h28" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+  <path d="M712 500h28" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+  <path d="M904 500h28" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+</svg>

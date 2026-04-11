@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" fill="#e2e8f0"/>
+  <rect x="48" y="48" width="1104" height="624" rx="28" fill="#0f172a"/>
+  <rect x="84" y="84" width="320" height="552" rx="22" fill="#1e293b"/>
+  <text x="118" y="130" font-size="28" font-family="Arial, sans-serif" fill="#f8fafc">Slack Thread</text>
+  <rect x="118" y="164" width="252" height="112" rx="18" fill="#ffffff"/>
+  <text x="138" y="206" font-size="20" font-family="Arial, sans-serif" fill="#111827">미래금융이 Citrix VDI</text>
+  <text x="138" y="236" font-size="20" font-family="Arial, sans-serif" fill="#111827">검토 중. 에이맥스 공동영업</text>
+  <rect x="118" y="306" width="252" height="184" rx="18" fill="#eff6ff"/>
+  <text x="138" y="346" font-size="20" font-family="Arial, sans-serif" fill="#1d4ed8">초안 제안</text>
+  <text x="138" y="378" font-size="18" font-family="Arial, sans-serif" fill="#334155">회사: 미래금융</text>
+  <text x="138" y="404" font-size="18" font-family="Arial, sans-serif" fill="#334155">솔루션: Citrix VDI</text>
+  <text x="138" y="430" font-size="18" font-family="Arial, sans-serif" fill="#334155">파트너: 에이맥스</text>
+  <rect x="138" y="452" width="64" height="28" rx="10" fill="#16a34a"/>
+  <rect x="212" y="452" width="76" height="28" rx="10" fill="#f59e0b"/>
+  <rect x="298" y="452" width="54" height="28" rx="10" fill="#dc2626"/>
+  <text x="152" y="472" font-size="14" font-family="Arial, sans-serif" fill="#ffffff">반영</text>
+  <text x="226" y="472" font-size="14" font-family="Arial, sans-serif" fill="#ffffff">수정 요청</text>
+  <text x="312" y="472" font-size="14" font-family="Arial, sans-serif" fill="#ffffff">취소</text>
+  <rect x="438" y="84" width="678" height="552" rx="22" fill="#ffffff"/>
+  <text x="474" y="130" font-size="28" font-family="Arial, sans-serif" fill="#111827">Twenty CRM</text>
+  <rect x="474" y="164" width="286" height="196" rx="20" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="502" y="204" font-size="22" font-family="Arial, sans-serif" fill="#111827">Slack 요청</text>
+  <text x="502" y="238" font-size="18" font-family="Arial, sans-serif" fill="#475569">의도: 쓰기 초안</text>
+  <text x="502" y="266" font-size="18" font-family="Arial, sans-serif" fill="#475569">상태: 승인 대기</text>
+  <text x="502" y="294" font-size="18" font-family="Arial, sans-serif" fill="#475569">신뢰도: 0.92</text>
+  <rect x="794" y="164" width="286" height="196" rx="20" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="822" y="204" font-size="22" font-family="Arial, sans-serif" fill="#111827">영업기회 초안</text>
+  <text x="822" y="238" font-size="18" font-family="Arial, sans-serif" fill="#475569">엔드고객: 미래금융</text>
+  <text x="822" y="266" font-size="18" font-family="Arial, sans-serif" fill="#475569">주 벤더사: Citrix</text>
+  <text x="822" y="294" font-size="18" font-family="Arial, sans-serif" fill="#475569">주 파트너사: 에이맥스</text>
+  <rect x="474" y="396" width="606" height="196" rx="20" fill="#0f172a"/>
+  <text x="510" y="442" font-size="24" font-family="Arial, sans-serif" fill="#f8fafc">운영 자동화 결과</text>
+  <text x="510" y="484" font-size="20" font-family="Arial, sans-serif" fill="#cbd5e1">- 승인 후 회사/담당자/영업기회 반영</text>
+  <text x="510" y="516" font-size="20" font-family="Arial, sans-serif" fill="#cbd5e1">- 누락 필드 점검 작업 생성</text>
+  <text x="510" y="548" font-size="20" font-family="Arial, sans-serif" fill="#cbd5e1">- 주간 브리핑과 리스크 점검에 포함</text>
+</svg>
