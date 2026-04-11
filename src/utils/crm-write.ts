@@ -269,6 +269,12 @@ const normalizeEntityData = async (
     delete nextData.body;
   }
 
+  if (kind === 'note' || kind === 'task') {
+    delete nextData.companyId;
+    delete nextData.pointOfContactId;
+    delete nextData.opportunityId;
+  }
+
   if (
     kind === 'opportunity' &&
     typeof nextData.amount === 'number' &&

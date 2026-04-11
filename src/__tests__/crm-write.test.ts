@@ -296,5 +296,15 @@ describe('crm write helpers', () => {
         id: true,
       },
     });
+
+    const notePayload =
+      mutation.mock.calls[3]?.[0]?.createNote?.__args?.data ?? {};
+    const taskPayload =
+      mutation.mock.calls[7]?.[0]?.createTask?.__args?.data ?? {};
+
+    expect(notePayload).not.toHaveProperty('companyId');
+    expect(notePayload).not.toHaveProperty('pointOfContactId');
+    expect(taskPayload).not.toHaveProperty('companyId');
+    expect(taskPayload).not.toHaveProperty('pointOfContactId');
   });
 });
