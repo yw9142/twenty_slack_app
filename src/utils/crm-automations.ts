@@ -4,7 +4,12 @@ import {
 } from 'src/constants/slack-intake';
 import type { BasicOpportunityRecord, SlackReply } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
-import { fetchNotes, fetchOpportunities, fetchTasks } from 'src/utils/crm-query';
+import {
+  buildConnectionArgs,
+  fetchNotes,
+  fetchOpportunities,
+  fetchTasks,
+} from 'src/utils/crm-query';
 import { createOperationalTask } from 'src/utils/crm-write';
 import {
   getConfiguredStageValues,
@@ -89,7 +94,8 @@ const fetchOpportunitySolutionCount = async (
       opportunitySolutions?: { edges: Array<{ node: { id: string } }> };
     }>({
       opportunitySolutions: {
-        __args: {
+        __args: buildConnectionArgs({
+          first: 20,
           filter: {
             opportunity: {
               id: {
@@ -97,10 +103,7 @@ const fetchOpportunitySolutionCount = async (
               },
             },
           },
-          paging: {
-            first: 20,
-          },
-        },
+        }),
         edges: {
           node: {
             id: true,
@@ -235,16 +238,14 @@ const fetchNoteById = async (
     notes?: { edges: Array<{ node: Record<string, unknown> }> };
   }>({
     notes: {
-      __args: {
+      __args: buildConnectionArgs({
+        first: 1,
         filter: {
           id: {
             eq: noteId,
           },
         },
-        paging: {
-          first: 1,
-        },
-      },
+      }),
       edges: {
         node: {
           id: true,

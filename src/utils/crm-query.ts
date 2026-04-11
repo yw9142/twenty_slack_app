@@ -111,6 +111,7 @@ const opportunityBasicSelection = {
 } as const;
 
 type RichOrBasicSelection = Record<string, unknown>;
+type ConnectionFilter = Record<string, unknown>;
 
 const noteSelection = {
   id: true,
@@ -159,6 +160,17 @@ const safeConnectionEdges = (
     .filter((node): node is Record<string, unknown> => node !== null);
 };
 
+export const buildConnectionArgs = ({
+  first = 100,
+  filter,
+}: {
+  first?: number;
+  filter?: ConnectionFilter;
+}) => ({
+  first,
+  ...(filter ? { filter } : {}),
+});
+
 const queryWithFallback = async <
   TRecord extends Record<string, unknown>,
 >({
@@ -173,11 +185,9 @@ const queryWithFallback = async <
   const client = createCoreClient();
   const buildSelection = (selection: RichOrBasicSelection) => ({
     [root]: {
-      __args: {
-        paging: {
-          first: 100,
-        },
-      },
+      __args: buildConnectionArgs({
+        first: 100,
+      }),
       edges: {
         node: selection,
       },
@@ -319,11 +329,9 @@ export const fetchNotes = async (): Promise<BasicNoteRecord[]> => {
     notes?: { edges: Array<{ node: Record<string, unknown> }> };
   }>({
     notes: {
-      __args: {
-        paging: {
-          first: 100,
-        },
-      },
+      __args: buildConnectionArgs({
+        first: 100,
+      }),
       edges: {
         node: noteSelection,
       },
@@ -351,11 +359,9 @@ export const fetchTasks = async (): Promise<BasicTaskRecord[]> => {
     tasks?: { edges: Array<{ node: Record<string, unknown> }> };
   }>({
     tasks: {
-      __args: {
-        paging: {
-          first: 100,
-        },
-      },
+      __args: buildConnectionArgs({
+        first: 100,
+      }),
       edges: {
         node: taskSelection,
       },
