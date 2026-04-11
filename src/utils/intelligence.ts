@@ -5,10 +5,13 @@ import {
   buildQuerySynthesisSystemPrompt,
   buildQuerySynthesisUserPrompt,
   buildWriteDraftSystemPrompt,
+  buildWriteDraftUserPrompt,
 } from 'src/constants/slack-agent-prompts';
 import type {
+  CrmWriteReview,
   CrmActionRecord,
   CrmWriteDraft,
+  DraftReviewItem,
   EntityHints,
   QueryDetailLevel,
   QueryFocusEntity,
@@ -16,6 +19,7 @@ import type {
   SlackReply,
   SlackIntentClassification,
 } from 'src/types/slack-agent';
+import { fetchWriteCandidateContext } from 'src/utils/crm-write-candidates';
 import { getAnthropicModel, getOptionalEnv } from 'src/utils/env';
 import {
   cleanSlackText,
@@ -56,6 +60,8 @@ type SynthesizedCrmReply = {
   text: string;
   sections: CrmReplySection[];
 };
+
+type StructuredCrmWriteDraft = CrmWriteDraft;
 
 const crmReplySchema = {
   type: 'object',
@@ -144,6 +150,113 @@ const crmQueryPlanSchema = {
     'focusEntity',
     'entityHints',
   ],
+  additionalProperties: false,
+} as const satisfies JsonSchema;
+
+const draftReviewSchema = {
+  type: 'object',
+  properties: {
+    overview: { type: 'string' },
+    opinion: { type: 'string' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: [
+              'company',
+              'person',
+              'opportunity',
+              'solution',
+              'companyRelationship',
+              'opportunityStakeholder',
+              'opportunitySolution',
+              'note',
+              'task',
+            ],
+          },
+          decision: {
+            type: 'string',
+            enum: ['CREATE', 'UPDATE', 'SKIP'],
+          },
+          target: { type: 'string' },
+          matchedRecord: { type: 'string' },
+          reason: { type: 'string' },
+          fields: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                key: { type: 'string' },
+                value: { type: 'string' },
+              },
+              required: ['key', 'value'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['kind', 'decision', 'target', 'fields'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['overview', 'opinion', 'items'],
+  additionalProperties: false,
+} as const satisfies JsonSchema;
+
+const crmWriteDraftSchema = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    confidence: { type: 'number' },
+    sourceText: { type: 'string' },
+    actions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: [
+              'company',
+              'person',
+              'opportunity',
+              'solution',
+              'companyRelationship',
+              'opportunityStakeholder',
+              'opportunitySolution',
+              'note',
+              'task',
+            ],
+          },
+          operation: {
+            type: 'string',
+            enum: ['create', 'update'],
+          },
+          lookup: {
+            type: 'object',
+            additionalProperties: {
+              type: 'string',
+            },
+          },
+          data: {
+            type: 'object',
+            additionalProperties: true,
+          },
+        },
+        required: ['kind', 'operation', 'data'],
+        additionalProperties: false,
+      },
+    },
+    warnings: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    review: draftReviewSchema,
+  },
+  required: ['summary', 'confidence', 'sourceText', 'actions', 'warnings', 'review'],
   additionalProperties: false,
 } as const satisfies JsonSchema;
 
@@ -292,6 +405,7 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
   const cleanedText = cleanSlackText(text);
   const entityHints = extractEntityHints(cleanedText);
   const cleanedSingleLine = toSingleLineSlackText(cleanedText);
+  const normalized = normalizeText(cleanedText);
   const noteTitle =
     entityHints.companies[0] && entityHints.solutions[0]
       ? `${entityHints.companies[0]} ${entityHints.solutions[0]} 기회 메모`
@@ -324,6 +438,30 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
     });
   }
 
+  if (
+    entityHints.companies[0] &&
+    (entityHints.solutions[0] ||
+      containsAny(normalized, ['기회', '검토', '전환', '제안', 'poc', '견적', '도입', '수요']))
+  ) {
+    actions.push({
+      kind: 'opportunity',
+      operation: 'create',
+      data: {
+        name:
+          entityHints.companies[0] && entityHints.solutions[0]
+            ? `${entityHints.companies[0]} ${entityHints.solutions[0]} 전환`
+            : `${entityHints.companies[0]} 신규 영업기회`,
+        companyName: entityHints.companies[0],
+        pointOfContactName: entityHints.people[0] ?? undefined,
+        stage: containsAny(normalized, ['poc'])
+          ? 'DISCOVERY_POC'
+          : containsAny(normalized, ['견적', '제안'])
+            ? 'QUOTED'
+            : 'VENDOR_ALIGNED',
+      },
+    });
+  }
+
   if (containsAny(normalizeText(text), ['할일', 'todo', '후속', '액션'])) {
     actions.push({
       kind: 'task',
@@ -347,15 +485,48 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
 
 const buildFallbackDraft = (text: string): CrmWriteDraft => {
   const cleanedText = cleanSlackText(text);
+  const entityHints = extractEntityHints(cleanedText);
+  const actions = fallbackWriteActions(cleanedText);
 
   return {
-  summary: '정리된 메모를 기준으로 CRM 반영 초안을 만들었습니다.',
-  confidence: 0.45,
-  sourceText: cleanedText,
-  actions: fallbackWriteActions(cleanedText),
-  warnings: [
-    '자동 추출 초안입니다. 실제 반영 전 Slack 승인 카드에서 반드시 확인하세요.',
-  ],
+    summary: '정리된 메모를 기준으로 CRM 반영 초안을 만들었습니다.',
+    confidence: 0.45,
+    sourceText: cleanedText,
+    actions,
+    warnings: [
+      '자동 추출 초안입니다. 실제 반영 전 Slack 승인 카드에서 반드시 확인하세요.',
+    ],
+    review: {
+      overview: '자동 추출 결과를 기반으로 반영 계획을 만들었습니다.',
+      opinion:
+        entityHints.companies[0] && actions.some((action) => action.kind === 'opportunity')
+          ? '회사와 기회 신호가 있어 영업기회 생성 초안을 포함했습니다.'
+          : '정보가 제한적이어서 메모 중심으로 보수적으로 작성했습니다.',
+      items: actions.map((action) => ({
+        kind: action.kind,
+        decision: action.operation === 'update' ? 'UPDATE' : 'CREATE',
+        target:
+          typeof action.data.title === 'string'
+            ? action.data.title
+            : typeof action.data.name === 'string'
+              ? action.data.name
+              : action.lookup?.name ?? action.kind,
+        matchedRecord: action.lookup?.name ?? null,
+        reason:
+          action.kind === 'opportunity'
+            ? '회사와 기회 신호가 있어 영업기회 반영 대상으로 판단했습니다.'
+            : '메모 내용을 구조화해 보조 기록으로 남깁니다.',
+        fields: Object.entries(action.data)
+          .filter(([, value]) =>
+            typeof value === 'string' || typeof value === 'number',
+          )
+          .slice(0, 4)
+          .map(([key, value]) => ({
+            key,
+            value: String(value),
+          })),
+      })),
+    },
   };
 };
 
@@ -427,6 +598,47 @@ const sanitizeDraft = (draft: CrmWriteDraft, sourceText: string): CrmWriteDraft 
     warnings: draft.warnings.map((warning) =>
       cleanSlackText(warning, { singleLine: true }),
     ),
+    review: sanitizeDraftReview(draft.review),
+  };
+};
+
+const sanitizeDraftReview = (
+  review: CrmWriteReview | undefined,
+): CrmWriteReview | undefined => {
+  if (!review) {
+    return undefined;
+  }
+
+  return {
+    overview: cleanSlackText(review.overview, { singleLine: true }),
+    opinion: cleanSlackText(review.opinion),
+    items: review.items
+      .filter(
+        (item): item is DraftReviewItem =>
+          typeof item.target === 'string' && item.target.trim().length > 0,
+      )
+      .map((item) => ({
+        ...item,
+        target: cleanSlackText(item.target, { singleLine: true }),
+        matchedRecord:
+          typeof item.matchedRecord === 'string'
+            ? cleanSlackText(item.matchedRecord, { singleLine: true })
+            : item.matchedRecord,
+        reason:
+          typeof item.reason === 'string' ? cleanSlackText(item.reason) : item.reason,
+        fields: item.fields
+          .filter(
+            (field) =>
+              typeof field.key === 'string' &&
+              field.key.trim().length > 0 &&
+              typeof field.value === 'string' &&
+              field.value.trim().length > 0,
+          )
+          .map((field) => ({
+            key: cleanSlackText(field.key, { singleLine: true }),
+            value: cleanSlackText(field.value, { singleLine: true }),
+          })),
+      })),
   };
 };
 
@@ -569,48 +781,6 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
   return toolUseBlock?.input ? (toolUseBlock.input as TInput) : null;
 };
 
-const callAnthropicJson = async <TResponse extends Record<string, unknown>>({
-  systemPrompt,
-  userPrompt,
-}: {
-  systemPrompt: string;
-  userPrompt: string;
-}): Promise<TResponse | null> => {
-  const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
-
-  if (!apiKey) {
-    return null;
-  }
-
-  const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      max_tokens: ANTHROPIC_MAX_TOKENS,
-      output_config: {
-        effort: 'low',
-      },
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    return null;
-  }
-
-  return parseAnthropicTextContent<TResponse>(
-    (await response.json()) as AnthropicMessageResponse,
-  );
-};
-
 export const classifySlackText = async (
   text: string,
 ): Promise<SlackIntentClassification> => {
@@ -711,9 +881,18 @@ export const buildCrmWriteDraft = async (
 ): Promise<CrmWriteDraft> => {
   const cleanedText = cleanSlackText(text);
   const fallback = buildFallbackDraft(cleanedText);
-  const aiResult = await callAnthropicJson<CrmWriteDraft>({
+  const candidateContext = await fetchWriteCandidateContext({
+    text: cleanedText,
+    entityHints: extractEntityHints(cleanedText),
+  });
+  const aiResult = await callAnthropicStructuredJson<StructuredCrmWriteDraft>({
     systemPrompt: buildWriteDraftSystemPrompt(),
-    userPrompt: cleanedText,
+    userPrompt: buildWriteDraftUserPrompt({
+      cleanedText,
+      candidateContext,
+    }),
+    schema: crmWriteDraftSchema,
+    effort: 'medium',
   });
 
   if (!aiResult) {
@@ -739,5 +918,9 @@ export const buildCrmWriteDraft = async (
           (warning): warning is string => typeof warning === 'string',
         )
       : fallback.warnings,
+    review:
+      aiResult.review && typeof aiResult.review === 'object'
+        ? (aiResult.review as CrmWriteReview)
+        : fallback.review,
   }, cleanedText);
 };

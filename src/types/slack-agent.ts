@@ -62,12 +62,33 @@ export type CrmActionRecord = {
   data: Record<string, unknown>;
 };
 
+export type DraftReviewField = {
+  key: string;
+  value: string;
+};
+
+export type DraftReviewItem = {
+  kind: EntityKind;
+  decision: 'CREATE' | 'UPDATE' | 'SKIP';
+  target: string;
+  matchedRecord?: string | null;
+  reason?: string | null;
+  fields: DraftReviewField[];
+};
+
+export type CrmWriteReview = {
+  overview: string;
+  opinion: string;
+  items: DraftReviewItem[];
+};
+
 export type CrmWriteDraft = {
   summary: string;
   confidence: number;
   sourceText: string;
   actions: CrmActionRecord[];
   warnings: string[];
+  review?: CrmWriteReview;
 };
 
 export type SlackBlock = Record<string, unknown>;

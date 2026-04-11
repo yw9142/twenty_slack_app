@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const { fetchWriteCandidateContext } = vi.hoisted(() => ({
+  fetchWriteCandidateContext: vi.fn(async () => ({
+    companies: [],
+    people: [],
+    opportunities: [],
+  })),
+}));
+
+vi.mock('src/utils/crm-write-candidates', () => ({
+  fetchWriteCandidateContext,
+}));
+
 import {
   buildCrmWriteDraft,
   classifySlackText,
@@ -9,6 +21,7 @@ import {
 afterEach(() => {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_MODEL;
+  fetchWriteCandidateContext.mockClear();
   vi.unstubAllGlobals();
 });
 
@@ -266,6 +279,11 @@ describe('intelligence fallbacks', () => {
 
   it('should use a sectioned write draft system prompt', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    fetchWriteCandidateContext.mockResolvedValue({
+      companies: [{ id: 'company-1', name: 'A은행' }],
+      people: [{ id: 'person-1', fullName: '김민수', companyName: 'A은행' }],
+      opportunities: [{ id: 'opp-1', name: 'A은행 기존 VDI 전환', companyName: 'A은행' }],
+    });
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -279,6 +297,11 @@ describe('intelligence fallbacks', () => {
               sourceText: 'A은행 Nutanix 전환 기회',
               actions: [],
               warnings: [],
+              review: {
+                overview: '기존 후보를 검토했습니다.',
+                opinion: '기존 기회를 업데이트하는 편이 안전합니다.',
+                items: [],
+              },
             }),
           },
         ],
@@ -297,5 +320,8 @@ describe('intelligence fallbacks', () => {
 
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Drafting Rules');
+    expect(body?.system).toContain('## Matching Strategy');
+    expect(body?.messages?.[0]?.content).toContain('<candidate_context>');
+    expect(body?.messages?.[0]?.content).toContain('A은행 기존 VDI 전환');
   });
 });

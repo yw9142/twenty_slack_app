@@ -18,31 +18,103 @@ import { postSlackReplyForRequest } from 'src/utils/slack-api';
 
 const nowIso = (): string => new Date().toISOString();
 
-const buildApprovalReply = ({
+const formatDecision = (decision: 'CREATE' | 'UPDATE' | 'SKIP'): string =>
+  decision === 'UPDATE' ? '기존 레코드 업데이트' : decision === 'SKIP' ? '반영 보류' : '신규 생성';
+
+const buildFallbackReview = (draft: CrmWriteDraft) => ({
+  overview: draft.summary,
+  opinion:
+    draft.warnings[0] ?? '승인 전에 생성/업데이트 대상과 필드를 한 번 더 확인하세요.',
+  items: draft.actions.map((action) => ({
+    kind: action.kind,
+    decision: (action.operation === 'update' ? 'UPDATE' : 'CREATE') as
+      | 'UPDATE'
+      | 'CREATE',
+    target:
+      typeof action.data.title === 'string'
+        ? action.data.title
+        : typeof action.data.name === 'string'
+          ? action.data.name
+          : action.lookup?.name ?? action.kind,
+    matchedRecord: action.lookup?.name ?? null,
+    reason: null,
+    fields: Object.entries(action.data)
+      .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
+      .slice(0, 4)
+      .map(([key, value]) => ({
+        key,
+        value: String(value),
+      })),
+  })),
+});
+
+const buildReviewText = (draft: CrmWriteDraft): string[] => {
+  const review = draft.review ?? buildFallbackReview(draft);
+
+  return review.items.map((item, index) => {
+    const fields =
+      item.fields.length > 0
+        ? item.fields.map((field) => `  - ${field.key}: ${field.value}`).join('\n')
+        : '  - 필드 없음';
+    const matchedRecord = item.matchedRecord
+      ? `\n• 대상 레코드: ${item.matchedRecord}`
+      : '';
+    const reason = item.reason ? `\n• 판단 근거: ${item.reason}` : '';
+
+    return [
+      `*${index + 1}. ${item.kind}*`,
+      `• 결정: ${formatDecision(item.decision)}`,
+      `• 반영 대상: ${item.target}`,
+      matchedRecord,
+      `• 반영 필드:\n${fields}`,
+      reason,
+    ]
+      .filter((line) => line.length > 0)
+      .join('\n');
+  });
+};
+
+export const buildApprovalReply = ({
   slackRequestId,
-  summary,
-  warnings,
+  draft,
 }: {
   slackRequestId: string;
-  summary: string;
-  warnings: string[];
+  draft: CrmWriteDraft;
 }): SlackReply => ({
-  text: `CRM 반영 초안을 만들었습니다. 검토 후 승인해 주세요. ${summary}`,
+  text: `CRM 반영 초안을 만들었습니다. 검토 후 승인해 주세요. ${draft.summary}`,
   blocks: [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*CRM 반영 초안*\n${summary}`,
+        text: `*CRM 반영 초안*\n${draft.summary}`,
       },
     },
-    ...(warnings.length > 0
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*반영 계획*\n${buildReviewText(draft).join('\n\n')}`,
+      },
+    },
+    ...(draft.review?.opinion
       ? [
           {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: warnings.map((warning) => `• ${warning}`).join('\n'),
+              text: `*의견*\n${draft.review.opinion}`,
+            },
+          },
+        ]
+      : []),
+    ...(draft.warnings.length > 0
+      ? [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: draft.warnings.map((warning) => `• ${warning}`).join('\n'),
             },
           },
         ]
@@ -171,8 +243,7 @@ export const processSlackRequest = async (
         slackRequest: draftedRequest,
         reply: buildApprovalReply({
           slackRequestId: draftedRequest.id,
-          summary: draft.summary,
-          warnings: draft.warnings,
+          draft,
         }),
       });
 
