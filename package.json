@@ -27,6 +27,7 @@
     "deploy:linux-safe": "node scripts/twenty-linux-deploy.mjs",
     "lint": "oxlint -c .oxlintrc.json .",
     "lint:fix": "oxlint --fix -c .oxlintrc.json .",
+    "slack-proxy:start": "node slack-proxy/server.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "test:watch": "vitest",

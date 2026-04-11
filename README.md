@@ -219,11 +219,11 @@ sequenceDiagram
 Slack 쪽에서는 아래 URL을 각각 등록해야 합니다.
 
 - Events API Request URL
-  `https://<your-twenty-domain>/s/slack/events`
+  `https://<your-twenty-domain>/slack/events`
 - Slash Command `/crm` Request URL
-  `https://<your-twenty-domain>/s/slack/commands`
+  `https://<your-twenty-domain>/slack/commands`
 - Interactivity Request URL
-  `https://<your-twenty-domain>/s/slack/interactivity`
+  `https://<your-twenty-domain>/slack/interactivity`
 
 권장 Bot Token Scope:
 
@@ -239,6 +239,7 @@ Slack 쪽에서는 아래 URL을 각각 등록해야 합니다.
 주의:
 - 현재 구현은 이메일 기반 사용자 권한 매핑을 실제로 사용하지 않으므로 `users:read.email`은 필수 범위가 아닙니다.
 - Events API에서는 `app_mention` 이벤트를 구독해야 합니다.
+- self-hosted Twenty를 production으로 올리면 route trigger POST 응답이 `201`로 내려갈 수 있습니다. Slack은 `200 OK`를 요구하므로, 아래 `Slack Proxy`를 함께 두는 구성이 안전합니다.
 
 ## 7. 배포 방식
 
@@ -257,6 +258,114 @@ yarn twenty remote add --api-url https://<your-twenty-domain> --api-key <your-ap
 yarn twenty deploy --remote production
 yarn twenty install --remote production
 ```
+
+## 8. Slack Proxy 배포
+
+### 8.1 왜 필요한가
+
+Twenty self-host 환경에서 `POST /s/*` route trigger 응답이 `201 Created`로 내려가면 Slack Events API, Slash Command, Interactivity가 모두 실패할 수 있습니다.
+이 저장소의 `slack-proxy`는 Slack 요청을 먼저 받아 내부 Twenty route로 전달한 뒤, 성공 응답을 `200 OK`로 정규화해서 Slack에 돌려주는 아주 작은 프록시입니다.
+
+즉 Slack은 아래 URL로 붙습니다.
+
+- `https://<your-twenty-domain>/slack/events`
+- `https://<your-twenty-domain>/slack/commands`
+- `https://<your-twenty-domain>/slack/interactivity`
+
+프록시는 내부적으로 아래 Twenty route를 호출합니다.
+
+- `http://server:3000/s/slack/events`
+- `http://server:3000/s/slack/commands`
+- `http://server:3000/s/slack/interactivity`
+
+### 8.2 프록시 로컬 실행
+
+```bash
+yarn slack-proxy:start
+```
+
+기본값:
+
+- `PORT=8080`
+- `TWENTY_INTERNAL_URL=http://server:3000`
+
+### 8.3 Docker 이미지 빌드
+
+```bash
+docker build -t twenty-slack-proxy ./slack-proxy
+```
+
+### 8.4 docker-compose 예시
+
+기존 Twenty compose에 아래 서비스를 추가합니다.
+
+```yaml
+  slack-proxy:
+    build:
+      context: ./slack-proxy
+    environment:
+      PORT: 8080
+      TWENTY_INTERNAL_URL: http://server:3000
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: always
+```
+
+`server` 서비스는 기존대로 내부 `3000`을 열고 있으면 됩니다.
+
+### 8.5 Caddy 예시
+
+`Caddyfile`은 Slack 경로만 `slack-proxy`로 보내고, 나머지는 Twenty `server`로 보내면 됩니다.
+
+```caddy
+<your-twenty-domain> {
+  handle /slack/* {
+    reverse_proxy slack-proxy:8080
+  }
+
+  handle {
+    reverse_proxy server:3000
+  }
+}
+```
+
+### 8.6 Azure Linux VM에서 실제 반영 순서
+
+1. 이 저장소 최신 코드를 VM으로 가져옵니다.
+2. `docker-compose.yml`에 `slack-proxy` 서비스를 추가합니다.
+3. `Caddyfile`을 위 구조로 수정합니다.
+4. Twenty server/worker에 `LOGIC_FUNCTION_TYPE=LOCAL`이 들어가 있는지 확인합니다.
+5. 재기동합니다.
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+6. 헬스 체크 확인:
+
+```bash
+curl https://<your-twenty-domain>/slack/events -i
+curl http://127.0.0.1:8080/healthz
+```
+
+주의:
+- `/slack/events`는 `POST` 전용이라 단순 `GET`은 `405`가 정상입니다.
+- `healthz`는 프록시 컨테이너 내부 헬스용입니다.
+
+### 8.7 Slack 앱 URL 최종값
+
+Slack 앱 설정에서는 반드시 아래 경로를 사용합니다.
+
+- Events API:
+  `https://<your-twenty-domain>/slack/events`
+- Slash Command `/crm`:
+  `https://<your-twenty-domain>/slack/commands`
+- Interactivity:
+  `https://<your-twenty-domain>/slack/interactivity`
+
+직접 Twenty route인 `/s/slack/...`를 Slack에 등록하지 않습니다.
 
 설치 후에는 Twenty UI의 `Settings > Applications`에서도 앱 설치 상태를 확인할 수 있습니다.
 
