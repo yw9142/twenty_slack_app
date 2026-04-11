@@ -92,12 +92,6 @@ const opportunityRichSelection = {
       lastName: true,
     },
   },
-  primaryVendorCompany: {
-    name: true,
-  },
-  primaryPartnerCompany: {
-    name: true,
-  },
 } as const;
 
 const opportunityBasicSelection = {
@@ -352,20 +346,6 @@ export const fetchOpportunities = async (): Promise<BasicOpportunityRecord[]> =>
       typeof record.company === 'object' &&
       typeof (record.company as { name?: unknown }).name === 'string'
         ? ((record.company as { name?: string }).name ?? null)
-        : null,
-    primaryVendorCompanyName:
-      record.primaryVendorCompany &&
-      typeof record.primaryVendorCompany === 'object' &&
-      typeof (record.primaryVendorCompany as { name?: unknown }).name ===
-        'string'
-        ? ((record.primaryVendorCompany as { name?: string }).name ?? null)
-        : null,
-    primaryPartnerCompanyName:
-      record.primaryPartnerCompany &&
-      typeof record.primaryPartnerCompany === 'object' &&
-      typeof (record.primaryPartnerCompany as { name?: unknown }).name ===
-        'string'
-        ? ((record.primaryPartnerCompany as { name?: string }).name ?? null)
         : null,
     pointOfContactName:
       record.pointOfContact &&
@@ -682,8 +662,6 @@ const toOpportunityContext = (opportunity: BasicOpportunityRecord) => ({
   stage: opportunity.stage ?? '미입력',
   amount: formatCurrency(opportunity),
   closeDate: opportunity.closeDate ?? '미입력',
-  primaryVendorCompanyName: opportunity.primaryVendorCompanyName ?? '미지정',
-  primaryPartnerCompanyName: opportunity.primaryPartnerCompanyName ?? '미지정',
   createdAt: opportunity.createdAt ?? null,
   updatedAt: opportunity.updatedAt ?? null,
 });
@@ -886,27 +864,10 @@ export const buildMonthlyNewOpinion = ({
 export const buildOpportunityOpinion = (
   opportunity: Pick<
     BasicOpportunityRecord,
-    | 'name'
-    | 'stage'
-    | 'closeDate'
-    | 'primaryVendorCompanyName'
-    | 'primaryPartnerCompanyName'
-    | 'pointOfContactName'
+    'name' | 'stage' | 'closeDate' | 'pointOfContactName' | 'companyName'
   >,
 ): string => {
   const gaps: string[] = [];
-
-  if (!opportunity.primaryVendorCompanyName) {
-    gaps.push('주 벤더사');
-  }
-
-  if (
-    opportunity.stage &&
-    ['QUOTED', 'NEGOTIATION'].includes(opportunity.stage) &&
-    !opportunity.primaryPartnerCompanyName
-  ) {
-    gaps.push('주 파트너사');
-  }
 
   if (!opportunity.pointOfContactName) {
     gaps.push('주요 담당자');
@@ -914,6 +875,10 @@ export const buildOpportunityOpinion = (
 
   if (!opportunity.closeDate) {
     gaps.push('예상 마감일');
+  }
+
+  if (!opportunity.companyName) {
+    gaps.push('고객사');
   }
 
   if (gaps.length === 0) {
@@ -944,7 +909,7 @@ const buildGeneralSummaryOpinion = ({
 const buildRiskOpinion = (count: number): string =>
   count === 0
     ? '현재 기준에서는 즉시 보완이 필요한 리스크 딜이 없습니다.'
-    : '견적·협상 단계에서 벤더/파트너 정보가 빈 딜부터 우선 정리하는 것이 좋습니다.';
+    : '진행 단계 대비 담당자, 예상 마감일, 최근 활동이 빈 딜부터 우선 정리하는 것이 좋습니다.';
 
 const findBestOpportunityMatch = (
   opportunities: BasicOpportunityRecord[],
@@ -1021,8 +986,6 @@ const buildDetailedOpportunityBody = (
         `- 단계: ${detailed.stage}`,
         `- 금액: ${detailed.amount}`,
         `- 예상 마감일: ${detailed.closeDate}`,
-        `- 주 벤더사: ${detailed.primaryVendorCompanyName}`,
-        `- 주 파트너사: ${detailed.primaryPartnerCompanyName}`,
         `- 최근 메모: ${recentNoteText}`,
         `- 최근 작업: ${recentTaskText}`,
         `- 다음 액션: ${detailed.nextAction}`,
@@ -1191,8 +1154,7 @@ const buildOpportunityStatusReply = async ({
       `${match.name} 상태입니다. ` +
       `단계 ${match.stage ?? '미입력'}, ` +
       `엔드고객 ${match.companyName ?? '미지정'}, ` +
-      `주 벤더사 ${match.primaryVendorCompanyName ?? '미지정'}, ` +
-      `주 파트너사 ${match.primaryPartnerCompanyName ?? '미지정'}.`,
+      `담당자 ${match.pointOfContactName ?? '미지정'}.`,
     blocks: [
       {
         type: 'section',
@@ -1202,8 +1164,6 @@ const buildOpportunityStatusReply = async ({
             `*${match.name}*\n` +
             `• 단계: ${match.stage ?? '미입력'}\n` +
             `• 엔드고객: ${match.companyName ?? '미지정'}\n` +
-            `• 주 벤더사: ${match.primaryVendorCompanyName ?? '미지정'}\n` +
-            `• 주 파트너사: ${match.primaryPartnerCompanyName ?? '미지정'}\n` +
             `• 예상 금액: ${formatCurrency(match)}\n` +
             `• 예상 마감일: ${match.closeDate ?? '미입력'}\n` +
             `• 주요 담당자: ${match.pointOfContactName ?? '미지정'}`,
@@ -1250,14 +1210,14 @@ const buildRiskReply = async ({
         ['VENDOR_ALIGNED', 'DISCOVERY_POC', 'QUOTED', 'NEGOTIATION'].includes(
           opportunity.stage,
         ) &&
-        !opportunity.primaryVendorCompanyName) ||
+        !opportunity.pointOfContactName) ||
       ((opportunity.stage === 'QUOTED' || opportunity.stage === 'NEGOTIATION') &&
-        !opportunity.primaryPartnerCompanyName),
+        !opportunity.closeDate),
   );
 
   const lines = risky.slice(0, 5).map(
     (opportunity) =>
-      `• ${opportunity.name} / 단계 ${opportunity.stage ?? '미입력'} / 벤더 ${opportunity.primaryVendorCompanyName ?? '미지정'} / 파트너 ${opportunity.primaryPartnerCompanyName ?? '미지정'}`,
+      `• ${opportunity.name} / 단계 ${opportunity.stage ?? '미입력'} / 담당자 ${opportunity.pointOfContactName ?? '미지정'} / 예상 마감일 ${opportunity.closeDate ?? '미지정'}`,
   );
   const resultJson = {
     count: risky.length,

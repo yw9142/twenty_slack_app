@@ -29,8 +29,6 @@ type CandidateOpportunity = {
   stage?: string | null;
   updatedAt?: string | null;
   closeDate?: string | null;
-  primaryVendorCompanyName?: string | null;
-  primaryPartnerCompanyName?: string | null;
 };
 
 export type WriteCandidateContext = {
@@ -200,12 +198,6 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
               lastName: true,
             },
           },
-          primaryVendorCompany: {
-            name: true,
-          },
-          primaryPartnerCompany: {
-            name: true,
-          },
         },
       },
     },
@@ -230,18 +222,6 @@ const fetchCandidateOpportunities = async (): Promise<CandidateOpportunity[]> =>
         ? toFullName(
             (record.pointOfContact as { name?: Record<string, unknown> }).name,
           ) || null
-        : null,
-    primaryVendorCompanyName:
-      record.primaryVendorCompany &&
-      typeof record.primaryVendorCompany === 'object' &&
-      typeof (record.primaryVendorCompany as { name?: unknown }).name === 'string'
-        ? ((record.primaryVendorCompany as { name?: string }).name ?? null)
-        : null,
-    primaryPartnerCompanyName:
-      record.primaryPartnerCompany &&
-      typeof record.primaryPartnerCompany === 'object' &&
-      typeof (record.primaryPartnerCompany as { name?: unknown }).name === 'string'
-        ? ((record.primaryPartnerCompany as { name?: string }).name ?? null)
         : null,
   }));
 };

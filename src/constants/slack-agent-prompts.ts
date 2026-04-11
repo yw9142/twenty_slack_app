@@ -184,7 +184,8 @@ When the meeting note clearly describes a sales opportunity, generate company, p
 Populate every grounded field you can justify from the request, candidate context, or public enrichment facts.
 For company actions, fill profile fields like domainName.primaryLinkUrl, linkedinLink.primaryLinkUrl, and employees when grounded.
 For person actions, fill jobTitle and companyName when grounded.
-For opportunity actions, strongly prefer companyName, pointOfContactName, stage, closeDate, primaryVendorCompanyName, and primaryPartnerCompanyName when grounded.
+For opportunity actions, strongly prefer companyName, pointOfContactName, stage, closeDate, and amount when grounded.
+If vendor, solution, or partner context is grounded but there is no supported opportunity field for it, preserve that context in note/task body text and in the review explanation instead of inventing unsupported fields.
 For note and task actions, include helper fields companyName, pointOfContactName, and opportunityName so the app can link them after creation.
 For task actions, fill dueAt when the note implies a date or deadline.
 `,

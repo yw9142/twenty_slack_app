@@ -519,7 +519,6 @@ const fallbackWriteActions = (text: string): CrmActionRecord[] => {
               ? 'QUOTED'
               : 'VENDOR_ALIGNED'),
         ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
-        ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
       },
     });
   }
@@ -650,6 +649,11 @@ const sanitizeDraftAction = (
     } else {
       delete nextData.pointOfContactName;
     }
+  }
+
+  if (action.kind === 'opportunity') {
+    delete nextData.primaryVendorCompanyName;
+    delete nextData.primaryPartnerCompanyName;
   }
 
   if (typeof nextData.body === 'string') {
@@ -909,16 +913,6 @@ const pickMatchingOpportunityCandidate = ({
       if (
         facts.personName &&
         isSameNormalized(opportunity.pointOfContactName ?? null, facts.personName)
-      ) {
-        score += 3;
-      }
-
-      if (
-        facts.vendorName &&
-        isSameNormalized(
-          opportunity.primaryVendorCompanyName ?? null,
-          facts.vendorName,
-        )
       ) {
         score += 3;
       }
@@ -1201,7 +1195,6 @@ const groundDraftWithMeetingFacts = ({
         ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
         ...(facts.stage ? { stage: facts.stage } : {}),
         ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
-        ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
       },
       factory: () => ({
         kind: 'opportunity',
@@ -1212,7 +1205,6 @@ const groundDraftWithMeetingFacts = ({
           ...(facts.personName ? { pointOfContactName: facts.personName } : {}),
           ...(facts.stage ? { stage: facts.stage } : {}),
           ...(facts.closeDate ? { closeDate: facts.closeDate } : {}),
-          ...(facts.vendorName ? { primaryVendorCompanyName: facts.vendorName } : {}),
         },
       }),
     });

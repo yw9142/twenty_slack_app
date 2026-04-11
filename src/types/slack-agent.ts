@@ -154,8 +154,6 @@ export type BasicOpportunityRecord = {
   stage?: string | null;
   closeDate?: string | null;
   companyName?: string | null;
-  primaryVendorCompanyName?: string | null;
-  primaryPartnerCompanyName?: string | null;
   pointOfContactName?: string | null;
   amountMicros?: number | null;
   currencyCode?: string | null;

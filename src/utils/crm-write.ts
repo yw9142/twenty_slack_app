@@ -185,28 +185,6 @@ const hydrateCommonReferenceIds = async (
       (await lookupCompanyIdByName(nextData.companyName));
   }
 
-  if (
-    typeof nextData.primaryVendorCompanyName === 'string' &&
-    !nextData.primaryVendorCompanyId
-  ) {
-    nextData.primaryVendorCompanyId =
-      resolved?.companyIdsByName.get(
-        toNormalizedKey(nextData.primaryVendorCompanyName),
-      ) ??
-      (await lookupCompanyIdByName(nextData.primaryVendorCompanyName));
-  }
-
-  if (
-    typeof nextData.primaryPartnerCompanyName === 'string' &&
-    !nextData.primaryPartnerCompanyId
-  ) {
-    nextData.primaryPartnerCompanyId =
-      resolved?.companyIdsByName.get(
-        toNormalizedKey(nextData.primaryPartnerCompanyName),
-      ) ??
-      (await lookupCompanyIdByName(nextData.primaryPartnerCompanyName));
-  }
-
   if (typeof nextData.pointOfContactName === 'string' && !nextData.pointOfContactId) {
     const companyName =
       typeof nextData.companyName === 'string' ? nextData.companyName : undefined;

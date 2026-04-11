@@ -45,12 +45,10 @@ describe('crm query helpers', () => {
       stage: 'NEGOTIATION',
       closeDate: null,
       companyName: 'A은행',
-      primaryVendorCompanyName: null,
-      primaryPartnerCompanyName: null,
       pointOfContactName: null,
     });
 
-    expect(opinion).toContain('주 벤더사');
-    expect(opinion).toContain('주 파트너사');
+    expect(opinion).toContain('주요 담당자');
+    expect(opinion).toContain('예상 마감일');
   });
 });

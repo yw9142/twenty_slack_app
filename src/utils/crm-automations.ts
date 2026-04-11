@@ -74,7 +74,7 @@ const isVendorRisk = (opportunity: BasicOpportunityRecord): boolean =>
     'VENDOR_ALIGNED_STAGE_VALUES',
     [...VENDOR_ALIGNED_STAGE_VALUES],
   ).includes(opportunity.stage) &&
-  !opportunity.primaryVendorCompanyName;
+  !opportunity.pointOfContactName;
 
 const isPartnerRisk = (opportunity: BasicOpportunityRecord): boolean =>
   opportunity.stage !== null &&
@@ -82,7 +82,7 @@ const isPartnerRisk = (opportunity: BasicOpportunityRecord): boolean =>
   getConfiguredStageValues('QUOTE_STAGE_VALUES', [...QUOTE_STAGE_VALUES]).includes(
     opportunity.stage,
   ) &&
-  !opportunity.primaryPartnerCompanyName;
+  !opportunity.closeDate;
 
 const fetchOpportunitySolutionCount = async (
   opportunityId: string,
@@ -130,11 +130,11 @@ export const runOpportunityHealthCheck = async (): Promise<{
     const reasons: string[] = [];
 
     if (isVendorRisk(opportunity)) {
-      reasons.push('주 벤더사 누락');
+      reasons.push('주요 담당자 누락');
     }
 
     if (isPartnerRisk(opportunity)) {
-      reasons.push('주 파트너사 누락');
+      reasons.push('예상 마감일 누락');
     }
 
     if (isStaleOpportunity(opportunity)) {

@@ -206,7 +206,6 @@ describe('intelligence fallbacks', () => {
     expect(personAction?.data.name).toBe('김민수');
     expect(personAction?.data.jobTitle).toBe('부장');
     expect(personAction?.data.companyName).toBe('A은행');
-    expect(opportunityAction?.data.primaryVendorCompanyName).toBe('Nutanix');
     expect(opportunityAction?.data.stage).toBe('DISCOVERY_POC');
     expect(opportunityAction?.data.closeDate).toBe('2026-05-31');
     expect(taskAction?.data.title).toContain('아키텍처 초안');
@@ -506,7 +505,6 @@ describe('intelligence fallbacks', () => {
     expect(opportunityAction?.data.name).toBe('A은행 Nutanix VDI 전환');
     expect(opportunityAction?.data.companyName).toBe('A은행');
     expect(opportunityAction?.data.pointOfContactName).toBe('김민수');
-    expect(opportunityAction?.data.primaryVendorCompanyName).toBe('Nutanix');
     expect(opportunityAction?.data.stage).toBe('DISCOVERY_POC');
     expect(taskAction?.data.title).toContain('아키텍처 초안');
     expect(draft.review?.items.length).toBeGreaterThan(0);

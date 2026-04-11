@@ -71,6 +71,8 @@ describe('crm write helpers', () => {
             name: 'A은행 Nutanix 전환',
             companyName: 'A은행',
             pointOfContactName: '김민수',
+            primaryVendorCompanyName: 'Nutanix',
+            primaryPartnerCompanyName: 'Daou Data',
             stage: 'DISCOVERY_POC',
           },
         },
@@ -96,6 +98,8 @@ describe('crm write helpers', () => {
 
     expect(payload).not.toHaveProperty('companyName');
     expect(payload).not.toHaveProperty('pointOfContactName');
+    expect(payload).not.toHaveProperty('primaryVendorCompanyName');
+    expect(payload).not.toHaveProperty('primaryPartnerCompanyName');
   });
 
   it('creates note and task target links for resolved company, person, and opportunity records', async () => {
