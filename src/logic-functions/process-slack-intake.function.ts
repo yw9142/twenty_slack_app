@@ -45,7 +45,7 @@ export default defineLogicFunction({
   universalIdentifier: PROCESS_INTAKE_FUNCTION_UNIVERSAL_IDENTIFIER,
   name: 'process-slack-intake',
   description: 'Processes a stored Slack 요청 record by id',
-  timeoutSeconds: 20,
+  timeoutSeconds: 60,
   handler,
   databaseEventTriggerSettings: {
     eventName: 'slackRequest.created',

@@ -24,6 +24,6 @@ export default defineLogicFunction({
   universalIdentifier: ANSWER_QUERY_FUNCTION_UNIVERSAL_IDENTIFIER,
   name: 'answer-crm-query',
   description: 'Answers a CRM question using current Twenty workspace data',
-  timeoutSeconds: 20,
+  timeoutSeconds: 60,
   handler,
 });

@@ -18,6 +18,6 @@ export default defineLogicFunction({
   universalIdentifier: BUILD_DRAFT_FUNCTION_UNIVERSAL_IDENTIFIER,
   name: 'build-crm-write-draft',
   description: 'Builds a structured CRM write draft from Slack free text',
-  timeoutSeconds: 20,
+  timeoutSeconds: 60,
   handler,
 });
