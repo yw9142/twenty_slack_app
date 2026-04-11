@@ -34,6 +34,14 @@ type SlackRequestLookupInput = {
 const parseJsonTextField = (
   value: unknown,
 ): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
   if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
@@ -53,7 +61,7 @@ const parseJsonTextField = (
 
 const serializeJsonTextField = (
   value: unknown,
-): string | null | undefined => {
+): Record<string, unknown> | string | null | undefined => {
   if (value === undefined) {
     return undefined;
   }
@@ -64,6 +72,10 @@ const serializeJsonTextField = (
 
   if (typeof value === 'string') {
     return value;
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
 
   return JSON.stringify(value);
