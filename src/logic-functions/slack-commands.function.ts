@@ -1,6 +1,7 @@
-import { defineLogicFunction, type RoutePayload } from 'twenty-sdk';
+import type { RoutePayload } from 'twenty-sdk';
 
 import { ROUTE_COMMAND_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 import { handleSlackCommandsRoute } from 'src/utils/slack-route-handler';
 
 const handler = async (

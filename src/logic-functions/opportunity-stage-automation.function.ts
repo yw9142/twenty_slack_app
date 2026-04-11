@@ -1,11 +1,11 @@
 import {
   type DatabaseEventPayload,
   type ObjectRecordUpdateEvent,
-  defineLogicFunction,
 } from 'twenty-sdk';
 
 import { OPPORTUNITY_STAGE_AUTOMATION_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { runOpportunityStageAutomation } from 'src/utils/crm-automations';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async (
   event: DatabaseEventPayload<ObjectRecordUpdateEvent<Record<string, unknown>>>,

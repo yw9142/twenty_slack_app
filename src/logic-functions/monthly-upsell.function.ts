@@ -1,7 +1,6 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { MONTHLY_UPSELL_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { postMonthlyUpsellBriefing } from 'src/utils/crm-automations';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async (): Promise<Record<string, unknown>> => {
   await postMonthlyUpsellBriefing();

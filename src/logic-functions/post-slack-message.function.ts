@@ -1,9 +1,8 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { POST_SLACK_MESSAGE_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { findSlackRequestById } from 'src/utils/slack-intake-service';
 import { postSlackReplyForRequest } from 'src/utils/slack-api';
 import type { SlackBlock } from 'src/types/slack-agent';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async ({
   slackRequestId,

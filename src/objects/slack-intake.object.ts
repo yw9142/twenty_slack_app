@@ -1,9 +1,8 @@
-import { defineObject, FieldType } from 'twenty-sdk';
-
 import {
   SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS,
   SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import { FieldType, defineObject } from 'src/utils/twenty-shim';
 
 export default defineObject({
   universalIdentifier: SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
@@ -77,12 +76,42 @@ export default defineObject({
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.sourceType,
-      type: FieldType.TEXT,
+      type: FieldType.SELECT,
       name: 'sourceType',
       label: '입력 경로',
       description: 'Slack 요청이 들어온 경로',
       icon: 'IconRoute',
-      isNullable: true,
+      defaultValue: "'APP_MENTION'",
+      options: [
+        {
+          id: '7ff072d3-a602-47a6-ad38-566ef7dcf651',
+          value: 'APP_MENTION',
+          label: '멘션',
+          color: 'blue',
+          position: 0,
+        },
+        {
+          id: 'e32069ce-25e2-470a-afb8-5250a9c77b22',
+          value: 'SLASH_COMMAND',
+          label: '슬래시 커맨드',
+          color: 'violet',
+          position: 1,
+        },
+        {
+          id: '6dee0049-04f5-4155-a754-f2dae7a790ae',
+          value: 'INTERACTIVITY',
+          label: '인터랙션',
+          color: 'orange',
+          position: 2,
+        },
+        {
+          id: '9c21c625-eb0f-4a37-9a99-b98a1b100397',
+          value: 'MESSAGE_ACTION',
+          label: '메시지 액션',
+          color: 'green',
+          position: 3,
+        },
+      ],
     },
     {
       universalIdentifier:
@@ -116,27 +145,115 @@ export default defineObject({
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.intentType,
-      type: FieldType.TEXT,
+      type: FieldType.SELECT,
       name: 'intentType',
       label: '의도',
       description: 'AI가 분류한 요청 의도',
       icon: 'IconSparkles',
-      isNullable: true,
+      defaultValue: "'UNKNOWN'",
+      options: [
+        {
+          id: 'a5c35252-0299-4176-8ff7-365fc9e096c9',
+          value: 'QUERY',
+          label: '조회',
+          color: 'blue',
+          position: 0,
+        },
+        {
+          id: 'ec562999-81c4-4393-b07e-55e884ebeb0f',
+          value: 'WRITE_DRAFT',
+          label: '쓰기 초안',
+          color: 'violet',
+          position: 1,
+        },
+        {
+          id: '847b81fc-0b17-4af4-9a01-983acf66a0ef',
+          value: 'APPROVAL_ACTION',
+          label: '승인 액션',
+          color: 'orange',
+          position: 2,
+        },
+        {
+          id: 'a9fb4bc4-e863-4f6f-90fe-76ae75728360',
+          value: 'UNKNOWN',
+          label: '미분류',
+          color: 'gray',
+          position: 3,
+        },
+      ],
     },
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.processingStatus,
-      type: FieldType.TEXT,
+      type: FieldType.SELECT,
       name: 'processingStatus',
       label: '처리 상태',
       description: '현재 요청 처리 상태',
       icon: 'IconStatusChange',
-      isNullable: true,
+      defaultValue: "'RECEIVED'",
+      options: [
+        {
+          id: 'cac91327-37f3-4276-bfb7-4dded9252bc5',
+          value: 'RECEIVED',
+          label: '수신',
+          color: 'gray',
+          position: 0,
+        },
+        {
+          id: '0df75ed2-1684-462e-a18b-cce8326d4a40',
+          value: 'CLASSIFIED',
+          label: '분류 완료',
+          color: 'blue',
+          position: 1,
+        },
+        {
+          id: '3d8cd5a7-24bf-4b4a-a149-44a9d5cc81a7',
+          value: 'AWAITING_CONFIRMATION',
+          label: '승인 대기',
+          color: 'orange',
+          position: 2,
+        },
+        {
+          id: 'f8033c99-5d0c-46d5-9512-c9d868031fa8',
+          value: 'CONFIRMED',
+          label: '승인됨',
+          color: 'violet',
+          position: 3,
+        },
+        {
+          id: 'de7cfe02-1d5a-4403-8054-99876edc1abf',
+          value: 'APPLIED',
+          label: '반영 완료',
+          color: 'green',
+          position: 4,
+        },
+        {
+          id: 'bc80fc96-52e2-4f24-8179-2d7098d51e53',
+          value: 'ANSWERED',
+          label: '응답 완료',
+          color: 'green',
+          position: 5,
+        },
+        {
+          id: '56e8f916-0d7e-4cf8-bdd8-887da990f349',
+          value: 'REJECTED',
+          label: '거절됨',
+          color: 'red',
+          position: 6,
+        },
+        {
+          id: '6b516e25-a8ca-4c20-9789-c32b2de4b365',
+          value: 'ERROR',
+          label: '오류',
+          color: 'red',
+          position: 7,
+        },
+      ],
     },
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.confidence,
-      type: FieldType.TEXT,
+      type: FieldType.NUMBER,
       name: 'confidence',
       label: '신뢰도',
       description: '의도 분류와 초안 생성 결과의 신뢰도',
@@ -146,21 +263,23 @@ export default defineObject({
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.draftJson,
-      type: FieldType.TEXT,
+      type: FieldType.RAW_JSON,
       name: 'draftJson',
       label: '초안 JSON',
-      description: '승인 전 생성된 구조화 초안을 문자열 JSON으로 저장',
+      description: '승인 전 생성된 구조화 초안',
       icon: 'IconBraces',
+      defaultValue: null,
       isNullable: true,
     },
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.resultJson,
-      type: FieldType.TEXT,
+      type: FieldType.RAW_JSON,
       name: 'resultJson',
       label: '결과 JSON',
-      description: '처리 결과와 생성된 레코드 요약을 문자열 JSON으로 저장',
+      description: '처리 결과와 생성된 레코드 요약',
       icon: 'IconChecklist',
+      defaultValue: null,
       isNullable: true,
     },
     {
@@ -188,15 +307,16 @@ export default defineObject({
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.approvedByWorkspaceMemberId,
       type: FieldType.TEXT,
       name: 'approvedByWorkspaceMemberId',
-      label: '승인자 Workspace Member ID',
-      description: '승인 액션을 누른 Twenty 사용자 ID',
+      label: '승인자 Slack User ID',
+      description:
+        '승인 액션을 누른 Slack 사용자 ID. Workspace member 매핑은 아직 적용되지 않음',
       icon: 'IconShieldCheck',
       isNullable: true,
     },
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.receivedAt,
-      type: FieldType.TEXT,
+      type: FieldType.DATE_TIME,
       name: 'receivedAt',
       label: '수신 시각',
       description: 'Slack 요청이 접수된 시각',
@@ -206,7 +326,7 @@ export default defineObject({
     {
       universalIdentifier:
         SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS.lastProcessedAt,
-      type: FieldType.TEXT,
+      type: FieldType.DATE_TIME,
       name: 'lastProcessedAt',
       label: '마지막 처리 시각',
       description: '요청이 마지막으로 처리된 시각',

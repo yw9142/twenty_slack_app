@@ -1,16 +1,16 @@
-import { defineView } from 'twenty-sdk';
-
 import {
   SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS,
   SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
   SLACK_WRITE_VIEW_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import { ViewType, defineView } from 'src/utils/twenty-shim';
 import { createSlackRequestBaseViewFields } from 'src/views/slack-request-view-fields';
 
 export default defineView({
   universalIdentifier: SLACK_WRITE_VIEW_UNIVERSAL_IDENTIFIER,
   name: '쓰기 초안 이력',
   objectUniversalIdentifier: SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
+  type: ViewType.TABLE,
   icon: 'IconPencil',
   position: 4,
   fields: createSlackRequestBaseViewFields({

@@ -282,15 +282,16 @@ yarn deploy:linux-safe --remote production --install
 ### 7.3 배포 후 확인할 것
 
 1. `Settings > Applications`에서 앱이 설치되었는지 확인
-2. 앱 변수와 서버 변수를 모두 입력했는지 확인
+2. 앱 구성 변수 값을 모두 입력했는지 확인
 3. Slack App Request URL이 올바른지 확인
 4. Slack 채널에서 `@멘션` 또는 `/crm` 테스트 메시지를 보내 동작 확인
 
 ## 8. 설치 후 초기 설정값
 
-이 앱은 Twenty의 앱 설정 화면에서 `앱 변수`와 `서버 변수`를 입력해야 정상 동작합니다.
+이 앱은 Twenty의 설치된 앱 상세 화면에서 보이는 `구성` 탭만 사용합니다.
+현재 Twenty tarball 앱 배포 흐름과 공식 문서를 기준으로, 실제 운영에 필요한 값은 모두 `applicationVariables`로 선언되어 있으며 `Settings > Applications > 다우 Slack Agent > 구성`에서 입력하면 됩니다.
 
-### 8.1 앱 변수
+### 8.1 애플리케이션 구성 변수
 
 | 변수명 | 필수 | 설명 | 권장 예시 | 비워둘 때 동작 |
 | --- | --- | --- | --- | --- |
@@ -299,18 +300,13 @@ yarn deploy:linux-safe --remote production --install
 | `MANAGEMENT_CHANNEL_ID` | 선택 | 주간 브리핑과 운영 요약을 보낼 채널 ID | `C09MANAGER1` | 비어 있으면 관리 채널 전송 생략 |
 | `VENDOR_ALIGNED_STAGE_VALUES` | 선택 | 주 벤더가 있어야 하는 영업기회 단계 값 목록 | `VENDOR_ALIGNED,DISCOVERY_POC,QUOTED,NEGOTIATION,CLOSED_WON,CLOSED_LOST,ON_HOLD` | 코드 기본값 사용 |
 | `QUOTE_STAGE_VALUES` | 선택 | 솔루션/파트너 체크가 필요한 단계 값 목록 | `QUOTED,NEGOTIATION,CLOSED_WON,CLOSED_LOST` | 코드 기본값 사용 |
-
-### 8.2 서버 변수
-
-| 변수명 | 필수 | 설명 | 권장 예시 | 기본값 |
-| --- | --- | --- | --- | --- |
-| `SLACK_BOT_TOKEN` | 필수 | Slack 응답 전송용 봇 토큰 | `xoxb-...` | 없음 |
-| `SLACK_SIGNING_SECRET` | 필수 | Slack 서명 검증용 secret | `abcd1234...` | 없음 |
-| `SLACK_VERIFICATION_TOKEN` | 선택 | raw body 검증이 어려운 환경에서 쓰는 fallback token | Slack 앱의 legacy token | 없음 |
-| `SLACK_APP_TOKEN` | 선택 | 향후 Socket Mode 대응용 app token | `xapp-...` | 없음 |
-| `OPENAI_API_KEY` | 필수 | 의도 분류와 초안 생성을 위한 OpenAI API key | `sk-...` | 없음 |
-| `OPENAI_MODEL` | 선택 | OpenAI 모델 ID | `gpt-4o-mini` | `gpt-4o-mini` |
-| `TWENTY_BASE_URL` | 필수 | Slack 답변에 넣을 Twenty 레코드 링크의 기준 URL | `https://crm.example.com` | 없음 |
+| `SLACK_BOT_TOKEN` | 필수 | Slack 응답 전송용 봇 토큰 | `xoxb-...` | 요청 처리 실패 |
+| `SLACK_SIGNING_SECRET` | 필수 | Slack 서명 검증용 secret | `abcd1234...` | Slack 검증 실패 |
+| `SLACK_VERIFICATION_TOKEN` | 선택 | raw body 검증이 어려운 환경에서 쓰는 fallback token | Slack 앱의 legacy token | 기본 검증만 수행 |
+| `SLACK_APP_TOKEN` | 선택 | 향후 Socket Mode 대응용 app token | `xapp-...` | 현재 버전에서는 미사용 |
+| `OPENAI_API_KEY` | 필수 | 의도 분류와 초안 생성을 위한 OpenAI API key | `sk-...` | AI 분류/초안 생성 비활성화 |
+| `OPENAI_MODEL` | 선택 | OpenAI 모델 ID | `gpt-4o-mini` | `gpt-4o-mini` 사용 |
+| `TWENTY_BASE_URL` | 필수 | Slack 답변에 넣을 Twenty 레코드 링크의 기준 URL | `https://crm.example.com` | 레코드 링크 생성 실패 |
 
 초기 설정 권장값:
 
@@ -343,7 +339,7 @@ RUN_TWENTY_INTEGRATION_TESTS=true yarn test:integration
 운영 시작 전에 아래를 확인하는 것이 좋습니다.
 
 1. Twenty 앱이 설치되어 있는가
-2. `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `OPENAI_API_KEY`, `TWENTY_BASE_URL`가 모두 입력되어 있는가
+2. `구성` 탭에서 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `OPENAI_API_KEY`, `TWENTY_BASE_URL`가 모두 입력되어 있는가
 3. Slack App Request URL이 현재 Twenty 도메인과 일치하는가
 4. 봇이 실제로 사용할 채널에 초대되어 있는가
 5. `ALLOWED_CHANNEL_IDS`가 의도한 운영 채널과 맞는가
@@ -355,7 +351,7 @@ RUN_TWENTY_INTEGRATION_TESTS=true yarn test:integration
 
 먼저 아래를 확인합니다.
 
-- 앱 변수와 서버 변수가 비어 있지 않은지
+- `구성` 탭 변수 값이 비어 있지 않은지
 - Slack App URL이 현재 배포 도메인을 가리키는지
 - Slack 봇이 채널에 참여해 있는지
 - `ALLOWED_CHANNEL_IDS`가 현재 채널을 막고 있지 않은지
@@ -403,7 +399,7 @@ yarn twenty remote add --api-url https://crm.example.com --api-key <api-key> --a
 yarn deploy:linux-safe --remote production --install
 ```
 
-3. Twenty에서 앱 변수/서버 변수 입력
+3. Twenty `구성` 탭에서 변수 입력
 
 4. Slack App URL 등록
 

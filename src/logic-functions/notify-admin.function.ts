@@ -1,7 +1,6 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { NOTIFY_ADMIN_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { createOperationalTask } from 'src/utils/crm-write';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async ({
   message,

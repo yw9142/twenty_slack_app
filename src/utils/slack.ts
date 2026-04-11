@@ -46,6 +46,7 @@ export type SlackIntakeDraft = {
   rawText?: string;
   normalizedText?: string;
   intentType?: IntentType;
+  processingStatus?: 'RECEIVED';
   confidence?: number;
   dedupeKey: string;
   receivedAt: string;

@@ -224,6 +224,21 @@ export const approveSlackRequest = async ({
   slackRequestId: string;
   approvedBySlackUserId?: string;
 }): Promise<SlackRequestRecord> => {
+  const confirmedRequest = await confirmSlackRequest({
+    slackRequestId,
+    approvedBySlackUserId,
+  });
+
+  return applyConfirmedSlackRequest(confirmedRequest.id);
+};
+
+export const confirmSlackRequest = async ({
+  slackRequestId,
+  approvedBySlackUserId,
+}: {
+  slackRequestId: string;
+  approvedBySlackUserId?: string;
+}): Promise<SlackRequestRecord> => {
   const slackRequest = await findSlackRequestById(slackRequestId);
 
   if (!slackRequest) {
@@ -234,7 +249,7 @@ export const approveSlackRequest = async ({
     throw new Error('승인할 draftJson이 없습니다.');
   }
 
-  const confirmedRequest = await updateSlackRequest({
+  return updateSlackRequest({
     id: slackRequest.id,
     data: {
       processingStatus: 'CONFIRMED',
@@ -243,12 +258,27 @@ export const approveSlackRequest = async ({
     },
   });
 
+};
+
+export const applyConfirmedSlackRequest = async (
+  slackRequestId: string,
+): Promise<SlackRequestRecord> => {
+  const slackRequest = await findSlackRequestById(slackRequestId);
+
+  if (!slackRequest) {
+    throw new Error(`Slack 요청 ${slackRequestId}를 찾지 못했습니다.`);
+  }
+
+  if (!slackRequest.draftJson) {
+    throw new Error('승인할 draftJson이 없습니다.');
+  }
+
   const applyResult = await applyApprovedDraft(
-    confirmedRequest.draftJson as CrmWriteDraft,
+    slackRequest.draftJson as CrmWriteDraft,
   );
 
   const appliedRequest = await updateSlackRequest({
-    id: confirmedRequest.id,
+    id: slackRequest.id,
     data: {
       processingStatus: applyResult.errors.length === 0 ? 'APPLIED' : 'ERROR',
       resultJson: buildApplyResultJson(applyResult),

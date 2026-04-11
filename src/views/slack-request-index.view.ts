@@ -1,9 +1,8 @@
-import { defineView, ViewKey } from 'twenty-sdk';
-
 import {
   SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
   SLACK_REQUEST_VIEW_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import { ViewKey, defineView } from 'src/utils/twenty-shim';
 import { createSlackRequestBaseViewFields } from 'src/views/slack-request-view-fields';
 
 export default defineView({

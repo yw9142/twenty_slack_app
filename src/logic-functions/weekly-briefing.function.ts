@@ -1,7 +1,6 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { WEEKLY_BRIEFING_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { postWeeklyBriefing } from 'src/utils/crm-automations';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async (): Promise<Record<string, unknown>> => {
   await postWeeklyBriefing();

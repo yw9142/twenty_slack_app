@@ -1,6 +1,5 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { BUILD_DRAFT_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 import { buildCrmWriteDraft } from 'src/utils/intelligence';
 
 const handler = async ({

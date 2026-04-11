@@ -1,10 +1,9 @@
-import { defineView } from 'twenty-sdk';
-
 import {
   SLACK_ERROR_VIEW_UNIVERSAL_IDENTIFIER,
   SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS,
   SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import { ViewType, defineView } from 'src/utils/twenty-shim';
 import {
   createSlackRequestBaseViewFields,
   createSlackRequestErrorViewField,
@@ -14,6 +13,7 @@ export default defineView({
   universalIdentifier: SLACK_ERROR_VIEW_UNIVERSAL_IDENTIFIER,
   name: '오류',
   objectUniversalIdentifier: SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER,
+  type: ViewType.TABLE,
   icon: 'IconAlertTriangle',
   position: 2,
   fields: [

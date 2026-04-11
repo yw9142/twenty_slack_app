@@ -1,11 +1,10 @@
-import { defineApplication } from 'twenty-sdk';
-
 import {
   APP_DESCRIPTION,
   APP_DISPLAY_NAME,
   APPLICATION_UNIVERSAL_IDENTIFIER,
   DEFAULT_ROLE_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import { defineApplication } from 'src/utils/twenty-shim';
 
 export default defineApplication({
   universalIdentifier: APPLICATION_UNIVERSAL_IDENTIFIER,
@@ -47,7 +46,7 @@ export default defineApplication({
 
 - 승인 전에는 실제 CRM 데이터를 변경하지 않습니다.
 - Slack 요청 이력을 별도 객체로 남겨 감사와 운영 추적이 가능합니다.
-- 서버 변수로 Slack/OpenAI 키를 분리해 배포 환경에서 안전하게 관리합니다.
+- 앱 구성 변수만으로 Slack/OpenAI 연동 설정을 관리합니다.
 `,
   applicationVariables: {
     ALLOWED_CHANNEL_IDS: {
@@ -86,46 +85,51 @@ export default defineApplication({
       value: '',
       isSecret: false,
     },
-  },
-  serverVariables: {
     SLACK_BOT_TOKEN: {
+      universalIdentifier: 'add4316d-b593-4793-8de1-f76318f967c5',
       description: 'Slack bot token used for posting replies and notifications.',
+      value: '',
       isSecret: true,
-      isRequired: true,
     },
     SLACK_SIGNING_SECRET: {
+      universalIdentifier: 'b32611a3-45fb-43e6-8f12-54d9520ebe05',
       description: 'Slack signing secret used to verify inbound webhooks.',
+      value: '',
       isSecret: true,
-      isRequired: true,
     },
     SLACK_VERIFICATION_TOKEN: {
+      universalIdentifier: '96133c05-2d23-44f0-a56b-1caa94dd77d9',
       description:
         'Optional fallback verification token for environments where raw body verification is not available.',
+      value: '',
       isSecret: true,
-      isRequired: false,
     },
     SLACK_APP_TOKEN: {
+      universalIdentifier: 'a5ec4f01-fbfc-4839-91ea-cd2f200e1c2f',
       description:
         'Optional Slack app-level token for future Socket Mode support.',
+      value: '',
       isSecret: true,
-      isRequired: false,
     },
     OPENAI_API_KEY: {
+      universalIdentifier: '45155fd1-25f7-4f7b-808e-3d309ea5e6cb',
       description: 'OpenAI API key used for intent analysis and draft generation.',
+      value: '',
       isSecret: true,
-      isRequired: true,
     },
     OPENAI_MODEL: {
+      universalIdentifier: 'c6d6691e-9bf2-4378-ba73-7c63f90f4f53',
       description:
         'OpenAI model ID used for structured query and draft generation.',
+      value: 'gpt-4o-mini',
       isSecret: false,
-      isRequired: false,
     },
     TWENTY_BASE_URL: {
+      universalIdentifier: '296993ee-e53c-416e-a946-d76a4ae4ac6b',
       description:
         'Public Twenty base URL used when generating record links for Slack.',
+      value: '',
       isSecret: false,
-      isRequired: true,
     },
   },
   defaultRoleUniversalIdentifier: DEFAULT_ROLE_UNIVERSAL_IDENTIFIER,

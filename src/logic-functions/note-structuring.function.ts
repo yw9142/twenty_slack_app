@@ -1,11 +1,11 @@
 import {
   type DatabaseEventPayload,
   type ObjectRecordCreateEvent,
-  defineLogicFunction,
 } from 'twenty-sdk';
 
 import { NOTE_STRUCTURING_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { structureNoteIntoTasks } from 'src/utils/crm-automations';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 
 const handler = async (
   event: DatabaseEventPayload<ObjectRecordCreateEvent<Record<string, unknown>>>,

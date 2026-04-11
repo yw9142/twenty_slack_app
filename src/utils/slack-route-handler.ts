@@ -1,11 +1,9 @@
 import type { RoutePayload } from 'twenty-sdk';
 
 import type { SlackSourceType } from 'src/constants/slack-intake';
-import type { SlackRequestRecord } from 'src/types/slack-agent';
 import { getAllowedChannelIds, getOptionalEnv, getRequiredEnv } from 'src/utils/env';
 import {
-  approveSlackRequest,
-  processSlackRequest,
+  confirmSlackRequest,
   rejectSlackRequest,
 } from 'src/utils/slack-orchestrator';
 import { createOrLoadSlackRequest } from 'src/utils/slack-intake-service';
@@ -97,26 +95,10 @@ const buildSlackIntakeDraft = ({
   slackResponseUrl: responseUrl,
   rawText,
   normalizedText: rawText.trim(),
+  processingStatus: 'RECEIVED',
   dedupeKey,
   receivedAt: nowIso(),
 });
-
-const createAndProcessSlackRequest = async (
-  draft: SlackIntakeDraft,
-): Promise<SlackRequestRecord> => {
-  const slackRequest = await createOrLoadSlackRequest(draft);
-
-  if (
-    slackRequest.processingStatus &&
-    ['ANSWERED', 'AWAITING_CONFIRMATION', 'APPLIED'].includes(
-      slackRequest.processingStatus,
-    )
-  ) {
-    return slackRequest;
-  }
-
-  return processSlackRequest(slackRequest);
-};
 
 export const handleSlackEventsRoute = async (
   event: RoutePayload<RouteBody>,
@@ -183,7 +165,7 @@ export const handleSlackEventsRoute = async (
     }),
   });
 
-  await createAndProcessSlackRequest(draft);
+  await createOrLoadSlackRequest(draft);
 
   return {
     ok: true,
@@ -229,7 +211,7 @@ export const handleSlackCommandsRoute = async (
     }),
   });
 
-  await createAndProcessSlackRequest(draft);
+  await createOrLoadSlackRequest(draft);
 
   return {
     ok: true,
@@ -262,7 +244,7 @@ export const handleSlackInteractivityRoute = async (
   }
 
   if (actionId === 'approve_slack_request') {
-    await approveSlackRequest({
+    await confirmSlackRequest({
       slackRequestId,
       approvedBySlackUserId: payload.user?.id,
     });

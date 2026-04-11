@@ -1,7 +1,6 @@
-import { defineLogicFunction } from 'twenty-sdk';
-
 import { ANSWER_QUERY_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { answerCrmQuery } from 'src/utils/crm-query';
+import { defineLogicFunction } from 'src/utils/define-logic-function';
 import { classifySlackText } from 'src/utils/intelligence';
 
 const handler = async ({

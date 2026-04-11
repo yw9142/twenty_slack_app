@@ -1,9 +1,11 @@
-import { NavigationMenuItemType, defineNavigationMenuItem } from 'twenty-sdk';
-
 import {
   SLACK_REQUEST_NAVIGATION_UNIVERSAL_IDENTIFIER,
   SLACK_REQUEST_VIEW_UNIVERSAL_IDENTIFIER,
 } from 'src/constants/universal-identifiers';
+import {
+  NavigationMenuItemType,
+  defineNavigationMenuItem,
+} from 'src/utils/twenty-shim';
 
 export default defineNavigationMenuItem({
   universalIdentifier: SLACK_REQUEST_NAVIGATION_UNIVERSAL_IDENTIFIER,
