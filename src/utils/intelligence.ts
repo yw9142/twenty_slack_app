@@ -1,14 +1,16 @@
-import { DEFAULT_OPENAI_MODEL } from 'src/constants/slack-intake';
+import { DEFAULT_ANTHROPIC_MODEL } from 'src/constants/slack-intake';
 import type {
   CrmActionRecord,
   CrmWriteDraft,
   EntityHints,
   SlackIntentClassification,
 } from 'src/types/slack-agent';
-import { getOpenAiModel, getOptionalEnv } from 'src/utils/env';
+import { getAnthropicModel, getOptionalEnv } from 'src/utils/env';
 import { normalizeText, truncate, uniqueNonEmpty } from 'src/utils/strings';
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_API_VERSION = '2023-06-01';
+const ANTHROPIC_MAX_TOKENS = 1024;
 
 const containsAny = (value: string, keywords: string[]): boolean =>
   keywords.some((keyword) => value.includes(keyword));
@@ -144,36 +146,35 @@ const buildFallbackDraft = (text: string): CrmWriteDraft => ({
   ],
 });
 
-const callOpenAiJson = async <TResponse extends Record<string, unknown>>({
+const callAnthropicJson = async <TResponse extends Record<string, unknown>>({
   systemPrompt,
   userPrompt,
 }: {
   systemPrompt: string;
   userPrompt: string;
 }): Promise<TResponse | null> => {
-  const apiKey = getOptionalEnv('OPENAI_API_KEY');
+  const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
   if (!apiKey) {
     return null;
   }
 
-  const model = getOpenAiModel() || DEFAULT_OPENAI_MODEL;
-  const response = await fetch(OPENAI_URL, {
+  const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
+  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json; charset=utf-8',
+      'anthropic-version': ANTHROPIC_API_VERSION,
+      'content-type': 'application/json; charset=utf-8',
+      'x-api-key': apiKey,
     },
     body: JSON.stringify({
       model,
-      response_format: {
-        type: 'json_object',
+      max_tokens: ANTHROPIC_MAX_TOKENS,
+      output_config: {
+        effort: 'low',
       },
+      system: systemPrompt,
       messages: [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
         {
           role: 'user',
           content: userPrompt,
@@ -187,14 +188,13 @@ const callOpenAiJson = async <TResponse extends Record<string, unknown>>({
   }
 
   const payload = (await response.json()) as {
-    choices?: Array<{
-      message?: {
-        content?: string;
-      };
+    content?: Array<{
+      type?: string;
+      text?: string;
     }>;
   };
 
-  const content = payload.choices?.[0]?.message?.content;
+  const content = payload.content?.find((block) => block.type === 'text')?.text;
 
   if (!content) {
     return null;
@@ -211,7 +211,7 @@ export const classifySlackText = async (
   text: string,
 ): Promise<SlackIntentClassification> => {
   const fallback = buildFallbackClassification(text);
-  const aiResult = await callOpenAiJson<SlackIntentClassification>({
+  const aiResult = await callAnthropicJson<SlackIntentClassification>({
     systemPrompt: [
       'You classify Slack messages for a Korean B2B CRM assistant.',
       'Return only valid JSON.',
@@ -243,7 +243,7 @@ export const buildCrmWriteDraft = async (
   text: string,
 ): Promise<CrmWriteDraft> => {
   const fallback = buildFallbackDraft(text);
-  const aiResult = await callOpenAiJson<CrmWriteDraft>({
+  const aiResult = await callAnthropicJson<CrmWriteDraft>({
     systemPrompt: [
       'You build a CRM write draft for a Korean B2B distributor CRM.',
       'Return only valid JSON.',

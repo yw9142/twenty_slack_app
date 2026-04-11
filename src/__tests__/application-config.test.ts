@@ -7,8 +7,8 @@ const runtimeVariableKeys = [
   'SLACK_SIGNING_SECRET',
   'SLACK_VERIFICATION_TOKEN',
   'SLACK_APP_TOKEN',
-  'OPENAI_API_KEY',
-  'OPENAI_MODEL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_MODEL',
   'TWENTY_BASE_URL',
 ] as const;
 

@@ -291,6 +291,9 @@ yarn deploy:linux-safe --remote production --install
 이 앱은 Twenty의 설치된 앱 상세 화면에서 보이는 `구성` 탭만 사용합니다.
 현재 Twenty tarball 앱 배포 흐름과 공식 문서를 기준으로, 실제 운영에 필요한 값은 모두 `applicationVariables`로 선언되어 있으며 `Settings > Applications > 다우 Slack Agent > 구성`에서 입력하면 됩니다.
 
+주의:
+- `0.1.9`부터 AI 연동 변수명이 `OPENAI_*`에서 `ANTHROPIC_*`로 변경됩니다. 기존 값을 쓰고 있었다면 `구성` 탭에서 다시 입력해야 합니다.
+
 ### 8.1 애플리케이션 구성 변수
 
 | 변수명 | 필수 | 설명 | 권장 예시 | 비워둘 때 동작 |
@@ -304,15 +307,15 @@ yarn deploy:linux-safe --remote production --install
 | `SLACK_SIGNING_SECRET` | 필수 | Slack 서명 검증용 secret | `abcd1234...` | Slack 검증 실패 |
 | `SLACK_VERIFICATION_TOKEN` | 선택 | raw body 검증이 어려운 환경에서 쓰는 fallback token | Slack 앱의 legacy token | 기본 검증만 수행 |
 | `SLACK_APP_TOKEN` | 선택 | 향후 Socket Mode 대응용 app token | `xapp-...` | 현재 버전에서는 미사용 |
-| `OPENAI_API_KEY` | 필수 | 의도 분류와 초안 생성을 위한 OpenAI API key | `sk-...` | AI 분류/초안 생성 비활성화 |
-| `OPENAI_MODEL` | 선택 | OpenAI 모델 ID | `gpt-4o-mini` | `gpt-4o-mini` 사용 |
+| `ANTHROPIC_API_KEY` | 필수 | 의도 분류와 초안 생성을 위한 Anthropic API key | `sk-ant-...` | AI 분류/초안 생성 비활성화 |
+| `ANTHROPIC_MODEL` | 선택 | Anthropic Claude 모델 ID | `claude-sonnet-4-6` | `claude-sonnet-4-6` 사용 |
 | `TWENTY_BASE_URL` | 필수 | Slack 답변에 넣을 Twenty 레코드 링크의 기준 URL | `https://crm.example.com` | 레코드 링크 생성 실패 |
 
 초기 설정 권장값:
 
 - 운영 시작 전에는 `ALLOWED_CHANNEL_IDS`를 꼭 지정하는 편이 안전합니다.
 - `MANAGEMENT_CHANNEL_ID`를 비우면 주간 브리핑과 운영 요약은 Slack으로 전송되지 않습니다.
-- `OPENAI_MODEL`을 비우면 기본값 `gpt-4o-mini`를 사용합니다.
+- `ANTHROPIC_MODEL`을 비우면 기본값 `claude-sonnet-4-6`을 사용합니다.
 
 ## 9. 로컬 개발
 
@@ -339,7 +342,7 @@ RUN_TWENTY_INTEGRATION_TESTS=true yarn test:integration
 운영 시작 전에 아래를 확인하는 것이 좋습니다.
 
 1. Twenty 앱이 설치되어 있는가
-2. `구성` 탭에서 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `OPENAI_API_KEY`, `TWENTY_BASE_URL`가 모두 입력되어 있는가
+2. `구성` 탭에서 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `TWENTY_BASE_URL`가 모두 입력되어 있는가
 3. Slack App Request URL이 현재 Twenty 도메인과 일치하는가
 4. 봇이 실제로 사용할 채널에 초대되어 있는가
 5. `ALLOWED_CHANNEL_IDS`가 의도한 운영 채널과 맞는가

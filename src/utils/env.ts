@@ -1,4 +1,7 @@
-import { DEFAULT_MANAGEMENT_CHANNEL_FALLBACK, DEFAULT_OPENAI_MODEL } from 'src/constants/slack-intake';
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_MANAGEMENT_CHANNEL_FALLBACK,
+} from 'src/constants/slack-intake';
 
 const normalizeList = (value: string | undefined): string[] =>
   (value ?? '')
@@ -31,8 +34,8 @@ export const getAdminSlackUserIds = (): string[] =>
 export const getManagementChannelId = (): string =>
   process.env.MANAGEMENT_CHANNEL_ID ?? DEFAULT_MANAGEMENT_CHANNEL_FALLBACK;
 
-export const getOpenAiModel = (): string =>
-  process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
+export const getAnthropicModel = (): string =>
+  process.env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 
 export const getConfiguredStageValues = (key: string, fallback: string[]): string[] => {
   const parsed = normalizeList(process.env[key]);

@@ -46,7 +46,7 @@ export default defineApplication({
 
 - 승인 전에는 실제 CRM 데이터를 변경하지 않습니다.
 - Slack 요청 이력을 별도 객체로 남겨 감사와 운영 추적이 가능합니다.
-- 앱 구성 변수만으로 Slack/OpenAI 연동 설정을 관리합니다.
+- 앱 구성 변수만으로 Slack/Anthropic 연동 설정을 관리합니다.
 `,
   applicationVariables: {
     ALLOWED_CHANNEL_IDS: {
@@ -111,17 +111,18 @@ export default defineApplication({
       value: '',
       isSecret: true,
     },
-    OPENAI_API_KEY: {
-      universalIdentifier: '45155fd1-25f7-4f7b-808e-3d309ea5e6cb',
-      description: 'OpenAI API key used for intent analysis and draft generation.',
+    ANTHROPIC_API_KEY: {
+      universalIdentifier: '73df722d-48c4-4a9c-a0e8-d02f7490ac7f',
+      description:
+        'Anthropic API key used for intent analysis and draft generation.',
       value: '',
       isSecret: true,
     },
-    OPENAI_MODEL: {
-      universalIdentifier: 'c6d6691e-9bf2-4378-ba73-7c63f90f4f53',
+    ANTHROPIC_MODEL: {
+      universalIdentifier: '30f63dbf-e0a0-4bb5-8782-9b87864c1479',
       description:
-        'OpenAI model ID used for structured query and draft generation.',
-      value: 'gpt-4o-mini',
+        'Anthropic Claude model ID used for structured query and draft generation.',
+      value: 'claude-sonnet-4-6',
       isSecret: false,
     },
     TWENTY_BASE_URL: {

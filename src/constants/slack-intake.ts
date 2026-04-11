@@ -27,7 +27,7 @@ export type SlackSourceType = (typeof SLACK_SOURCE_TYPES)[number];
 export type IntentType = (typeof INTENT_TYPES)[number];
 export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 
-export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 export const DEFAULT_MANAGEMENT_CHANNEL_FALLBACK = '';
 
 export const VENDOR_ALIGNED_STAGE_VALUES = [
