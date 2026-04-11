@@ -170,6 +170,31 @@ Judge alignment using these criteria together: same company, similar opportunity
 If the existing opportunity match is ambiguous, create a new opportunity instead of forcing an update.
 If the note contains enough business substance for a sales opportunity, do not stop at a note-only draft.
 Always explain why you chose create vs update in the review output.
+Treat the raw request text as the primary source of truth. Heuristic hints may be incomplete or wrong.
+`,
+    },
+    {
+      title: 'Writable CRM Schema',
+      content: `
+Only use these structured object kinds in actions:
+- company
+- person
+- opportunity
+- note
+- task
+
+Allowed fields by object:
+- company: name, domainName, linkedinLink, employees
+- person: name, companyName, jobTitle, primaryEmail, linkedinLink, city
+- opportunity: name, companyName, pointOfContactName, stage, closeDate, amount, currencyCode
+- note: title, bodyV2, companyName, pointOfContactName, opportunityName
+- task: title, bodyV2, status, dueAt, companyName, pointOfContactName, opportunityName
+
+Relation rules:
+- opportunity must reference the customer company through companyName, not partner/vendor names
+- note and task do not write direct companyId or opportunityId fields; helper names are used for later linking
+- partner, vendor, and product context should be preserved in note/task body text and review explanations unless there is a supported structured field
+- if the request explicitly distinguishes an end-user customer and a partner company, the company record should represent the end-user customer by default
 `,
     },
     {
@@ -178,7 +203,7 @@ Always explain why you chose create vs update in the review output.
 Top-level keys: summary, confidence, sourceText, actions, warnings.
 Include a review object with overview, opinion, and items.
 actions is an array of { kind, operation, lookup?, data }.
-kind must be one of company, person, opportunity, solution, companyRelationship, opportunityStakeholder, opportunitySolution, note, task.
+kind must be one of company, person, opportunity, note, task.
 operation must be create or update.
 When the meeting note clearly describes a sales opportunity, generate company, person, opportunity, and supporting note/task records together rather than note-only output.
 Populate every grounded field you can justify from the request, candidate context, or public enrichment facts.
@@ -217,13 +242,23 @@ export const buildWriteDraftUserPrompt = ({
   return [
     '<instructions>',
     'Read the meeting note and candidate CRM records carefully.',
+    'Treat the raw request as the primary source of truth.',
+    'Heuristic hints may be wrong. Use them only when they agree with the raw request.',
     'Create or update company, person, and opportunity records when the note clearly supports it.',
     'Use note and task records as supporting records, not as the only output, when a meaningful sales opportunity exists.',
     'If you update an existing opportunity, use lookup.name with the exact candidate opportunity name.',
     'If you create a new opportunity, choose a concise Korean title that includes the company or opportunity theme.',
     'The review object must explain what will be written, where it will be written, and why.',
-    'Use the extracted meeting facts as hard grounding. If a fact is present there, prefer to include it in the appropriate CRM field instead of dropping it.',
+    'Use heuristic hints only when they are consistent with the raw request and candidate context.',
+    'Never output unsupported structured fields such as primaryVendorCompany, primaryPartnerCompany, partnerName, vendorName, productName, companyId, pointOfContactId, or opportunityId in action.data.',
     '</instructions>',
+    '<writable_objects>',
+    'company: name, domainName, linkedinLink, employees',
+    'person: name, companyName, jobTitle, primaryEmail, linkedinLink, city',
+    'opportunity: name, companyName, pointOfContactName, stage, closeDate, amount, currencyCode',
+    'note: title, bodyV2, companyName, pointOfContactName, opportunityName',
+    'task: title, bodyV2, status, dueAt, companyName, pointOfContactName, opportunityName',
+    '</writable_objects>',
     '<matching_criteria>',
     '1. Same company is the strongest signal.',
     '2. Similar opportunity theme or solution is the next signal.',
@@ -239,7 +274,7 @@ export const buildWriteDraftUserPrompt = ({
     '</example>',
     '</examples>',
     `<request>${cleanedText}</request>`,
-    `<meeting_facts>${JSON.stringify(compactedFacts)}</meeting_facts>`,
+    `<heuristic_hints>${JSON.stringify(compactedFacts)}</heuristic_hints>`,
     `<candidate_context>${JSON.stringify(compactedCandidates)}</candidate_context>`,
   ].join('\n');
 };

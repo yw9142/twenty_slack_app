@@ -3,6 +3,7 @@ import { cleanSlackText, normalizeText, truncate } from 'src/utils/strings';
 
 export type MeetingFacts = {
   companyName: string | null;
+  partnerName: string | null;
   personName: string | null;
   personTitle: string | null;
   solutionName: string | null;
@@ -36,10 +37,35 @@ const TITLE_VALUES = [
 const VENDOR_BY_KEYWORD: Array<{ match: RegExp; vendor: string; solution: string }> = [
   { match: /\bnutanix\b/i, vendor: 'Nutanix', solution: 'Nutanix VDI' },
   { match: /\bcitrix\b|\bnetscaler\b|\badc\b/i, vendor: 'Citrix', solution: 'Citrix VDI' },
-  { match: /\bspotfire\b|\btibco\b/i, vendor: 'TIBCO', solution: 'Spotfire' },
+  { match: /\bspotfire\b/i, vendor: 'TIBCO', solution: 'Spotfire' },
+  { match: /\btibco\b/i, vendor: 'TIBCO', solution: 'TIBCO' },
   { match: /\bvmware\b|\bhorizon\b/i, vendor: 'VMware', solution: 'VMware Horizon' },
   { match: /\banyware\b|\bhp\b/i, vendor: 'HP', solution: 'HP Anyware' },
 ];
+
+const extractLabeledEntity = ({
+  text,
+  patterns,
+  sanitizer,
+}: {
+  text: string;
+  patterns: RegExp[];
+  sanitizer: (value: string) => string | null;
+}): string | null => {
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+
+    if (match?.[1]) {
+      const sanitized = sanitizer(match[1]);
+
+      if (sanitized) {
+        return sanitized;
+      }
+    }
+  }
+
+  return null;
+};
 
 const toIsoDate = (year: number, month: number, day: number): string =>
   `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -153,6 +179,25 @@ const extractVendorAndSolution = (
   text: string,
   hints: ReturnType<typeof extractEntityHints>,
 ): { vendorName: string | null; solutionName: string | null } => {
+  const explicitProduct = extractLabeledEntity({
+    text,
+    patterns: [
+      /(?:제품은?|제품명은?|솔루션은?)\s*([A-Za-z0-9가-힣&._-]{2,})/i,
+      /(?:제품|솔루션)\s*[:：]\s*([A-Za-z0-9가-힣&._-]{2,})/i,
+    ],
+    sanitizer: (value) =>
+      cleanSlackText(value, { singleLine: true })
+        .replace(/(?:이고|이며|이다|입니다)$/u, '')
+        .trim(),
+  });
+
+  if (explicitProduct) {
+    return {
+      vendorName: explicitProduct,
+      solutionName: explicitProduct,
+    };
+  }
+
   for (const candidate of VENDOR_BY_KEYWORD) {
     if (candidate.match.test(text)) {
       return {
@@ -289,11 +334,37 @@ const buildTaskTitle = ({
   return truncate(`${prefix}${nextAction}`, 48);
 };
 
+const extractPrimaryCompanyName = (
+  text: string,
+  hints: ReturnType<typeof extractEntityHints>,
+): string | null =>
+  extractLabeledEntity({
+    text,
+    patterns: [
+      /(?:엔드유저는|고객사는|고객은|발주처는)\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+      /(?:엔드유저|고객사|발주처)\s*[:：]\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+    ],
+    sanitizer: sanitizeCompanyName,
+  }) ??
+  sanitizeCompanyName(hints.companies[0] ?? '') ??
+  null;
+
+const extractPartnerName = (text: string): string | null =>
+  extractLabeledEntity({
+    text,
+    patterns: [
+      /(?:파트너사는?|파트너는?|협력사는?)\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+      /(?:파트너사|파트너|협력사)\s*[:：]\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+    ],
+    sanitizer: sanitizeCompanyName,
+  });
+
 export const extractMeetingFacts = (input: string): MeetingFacts => {
   const cleanedText = cleanSlackText(input);
   const normalized = normalizeText(cleanedText);
   const hints = extractEntityHints(cleanedText);
-  const companyName = sanitizeCompanyName(hints.companies[0] ?? '') ?? null;
+  const companyName = extractPrimaryCompanyName(cleanedText, hints);
+  const partnerName = extractPartnerName(cleanedText);
   const person = extractPerson(cleanedText);
   const scheduleDate = extractScheduleDate(cleanedText);
   const { vendorName, solutionName } = extractVendorAndSolution(cleanedText, hints);
@@ -316,6 +387,7 @@ export const extractMeetingFacts = (input: string): MeetingFacts => {
 
   return {
     companyName,
+    partnerName,
     personName: person.name,
     personTitle: person.title,
     solutionName,

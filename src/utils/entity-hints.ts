@@ -6,12 +6,17 @@ const COMPANY_STOPWORDS = new Set([
   '고객',
   '고객사',
   '회사',
+  '엔드유저',
+  '파트너사',
+  '파트너',
   '오늘',
   '이번',
   '기존에',
   '현재',
   '후속',
   '미팅',
+  '확인됐다',
+  '확인됐다.',
 ]);
 
 const PERSON_PREFIX_PATTERN =
@@ -37,7 +42,9 @@ export const sanitizeCompanyName = (value: string): string | null => {
   const normalized = normalizeEntityToken(value).replace(
     /^(?:오늘|이번|기존에|현재|후속|관련해서|그대로)\s+/,
     '',
-  );
+  )
+    .replace(/(?:이고|이며|이다|입니다|라고|라는)$/u, '')
+    .trim();
 
   if (normalized.length < 2 || COMPANY_STOPWORDS.has(normalized)) {
     return null;
@@ -55,6 +62,17 @@ export const sanitizePersonName = (value: string): string | null => {
   return normalized.length >= 2 ? normalized : null;
 };
 
+const collectLabeledMatches = (
+  text: string,
+  patterns: RegExp[],
+  sanitizer: (value: string) => string | null,
+): string[] =>
+  patterns.flatMap((pattern) =>
+    Array.from(text.matchAll(pattern))
+      .map((match) => sanitizer(match[1] ?? ''))
+      .filter((value): value is string => Boolean(value)),
+  );
+
 const collectMatches = (
   text: string,
   pattern: RegExp,
@@ -66,9 +84,12 @@ const collectMatches = (
 
 export const extractEntityHints = (text: string): EntityHints => {
   const companyMatches = [
-    ...collectMatches(
+    ...collectLabeledMatches(
       text,
-      /([A-Za-z0-9가-힣&._-]{2,})(?:\s*)(?:회사|고객|고객사|벤더|파트너)/g,
+      [
+        /(?:엔드유저는|고객사는|고객은|회사명은|회사명:|회사명：|발주처는)\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+        /(?:엔드유저|고객사|회사명|발주처)\s*[:：]\s*([A-Za-z0-9가-힣&._-]{2,})/g,
+      ],
       sanitizeCompanyName,
     ),
     ...collectMatches(
@@ -78,7 +99,7 @@ export const extractEntityHints = (text: string): EntityHints => {
     ),
     ...collectMatches(
       text,
-      /([A-Za-z0-9가-힣&._-]{2,})\s+(?:인프라팀|보안팀|설계본부|본부장|운영총괄|영업팀|구매팀|총괄|실무팀)/g,
+      /([A-Za-z0-9가-힣&._-]{2,})\s+(?:[A-Za-z0-9가-힣]+팀|[A-Za-z0-9가-힣]+본부|[A-Za-z0-9가-힣]+실|[A-Za-z0-9가-힣]+센터|운영총괄|총괄)/g,
       sanitizeCompanyName,
     ),
   ];
@@ -102,6 +123,12 @@ export const extractEntityHints = (text: string): EntityHints => {
 
   const solutionMatches = Array.from(
     text.matchAll(
+      /(?:제품은?|제품명은?|솔루션은?)\s*([A-Za-z0-9가-힣&._-]{2,})/gi,
+    ),
+  ).map((match) => match[1] ?? '');
+
+  const keywordSolutionMatches = Array.from(
+    text.matchAll(
       /(Citrix|NetScaler|Nubo|Tibco|TIBCO|Spotfire|VDI|VMI|ADC|Analytics|Nutanix|VMware|Horizon|Anyware|HP)/gi,
     ),
   ).map((match) => match[1] ?? '');
@@ -110,6 +137,6 @@ export const extractEntityHints = (text: string): EntityHints => {
     companies: uniqueNonEmpty(companyMatches),
     opportunities: uniqueNonEmpty(opportunityMatches),
     people: uniqueNonEmpty(personMatches),
-    solutions: uniqueNonEmpty(solutionMatches),
+    solutions: uniqueNonEmpty([...solutionMatches, ...keywordSolutionMatches]),
   };
 };

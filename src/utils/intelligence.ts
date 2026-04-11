@@ -92,6 +92,55 @@ type PublicEnrichmentResponse = {
 
 type MeetingFacts = ReturnType<typeof extractMeetingFacts>;
 
+const SUPPORTED_WRITE_KINDS = [
+  'company',
+  'person',
+  'opportunity',
+  'note',
+  'task',
+] as const;
+
+type SupportedWriteKind = (typeof SUPPORTED_WRITE_KINDS)[number];
+
+const WRITE_ALLOWED_FIELDS: Record<SupportedWriteKind, Set<string>> = {
+  company: new Set(['name', 'domainName', 'linkedinLink', 'employees']),
+  person: new Set([
+    'name',
+    'companyName',
+    'jobTitle',
+    'primaryEmail',
+    'linkedinLink',
+    'city',
+  ]),
+  opportunity: new Set([
+    'name',
+    'companyName',
+    'pointOfContactName',
+    'stage',
+    'closeDate',
+    'amount',
+    'currencyCode',
+  ]),
+  note: new Set([
+    'title',
+    'body',
+    'bodyV2',
+    'companyName',
+    'pointOfContactName',
+    'opportunityName',
+  ]),
+  task: new Set([
+    'title',
+    'body',
+    'bodyV2',
+    'status',
+    'dueAt',
+    'companyName',
+    'pointOfContactName',
+    'opportunityName',
+  ]),
+};
+
 const crmReplySchema = {
   type: 'object',
   properties: {
@@ -194,17 +243,7 @@ const draftReviewSchema = {
         properties: {
           kind: {
             type: 'string',
-            enum: [
-              'company',
-              'person',
-              'opportunity',
-              'solution',
-              'companyRelationship',
-              'opportunityStakeholder',
-              'opportunitySolution',
-              'note',
-              'task',
-            ],
+            enum: [...SUPPORTED_WRITE_KINDS],
           },
           decision: {
             type: 'string',
@@ -248,17 +287,7 @@ const crmWriteDraftSchema = {
         properties: {
           kind: {
             type: 'string',
-            enum: [
-              'company',
-              'person',
-              'opportunity',
-              'solution',
-              'companyRelationship',
-              'opportunityStakeholder',
-              'opportunitySolution',
-              'note',
-              'task',
-            ],
+            enum: [...SUPPORTED_WRITE_KINDS],
           },
           operation: {
             type: 'string',
@@ -611,11 +640,47 @@ const sanitizeDraftTextField = (
   return cleanSlackText(value, { singleLine });
 };
 
+const isSupportedWriteKind = (kind: CrmActionRecord['kind']): kind is SupportedWriteKind =>
+  (SUPPORTED_WRITE_KINDS as readonly string[]).includes(kind);
+
+const filterAllowedWriteFields = (
+  kind: SupportedWriteKind,
+  data: Record<string, unknown>,
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(data).filter(([key]) => WRITE_ALLOWED_FIELDS[kind].has(key)),
+  );
+
+const hasRequiredWriteShape = (
+  kind: SupportedWriteKind,
+  data: Record<string, unknown>,
+): boolean => {
+  if (kind === 'company' || kind === 'person' || kind === 'opportunity') {
+    return typeof data.name === 'string' && data.name.trim().length > 0;
+  }
+
+  if (kind === 'note' || kind === 'task') {
+    return Boolean(
+      (typeof data.title === 'string' && data.title.trim().length > 0) ||
+      typeof data.body === 'string' ||
+      (data.bodyV2 &&
+        typeof data.bodyV2 === 'object' &&
+        typeof (data.bodyV2 as { markdown?: unknown }).markdown === 'string'),
+    );
+  }
+
+  return false;
+};
+
 const sanitizeDraftAction = (
   action: CrmActionRecord,
   sourceText: string,
-): CrmActionRecord => {
-  const nextData = { ...action.data };
+): CrmActionRecord | null => {
+  if (!isSupportedWriteKind(action.kind)) {
+    return null;
+  }
+
+  const nextData = filterAllowedWriteFields(action.kind, { ...action.data });
   const cleanedSource = toSingleLineSlackText(sourceText);
 
   if (typeof nextData.title === 'string') {
@@ -651,11 +716,6 @@ const sanitizeDraftAction = (
     }
   }
 
-  if (action.kind === 'opportunity') {
-    delete nextData.primaryVendorCompanyName;
-    delete nextData.primaryPartnerCompanyName;
-  }
-
   if (typeof nextData.body === 'string') {
     nextData.body = sanitizeDraftTextField(nextData.body);
   }
@@ -674,6 +734,10 @@ const sanitizeDraftAction = (
     nextData.bodyV2 = bodyV2;
   }
 
+  if (!hasRequiredWriteShape(action.kind, nextData)) {
+    return null;
+  }
+
   return {
     ...action,
     data: nextData,
@@ -689,9 +753,9 @@ const sanitizeDraft = (draft: CrmWriteDraft, sourceText: string): CrmWriteDraft 
     ...draft,
     summary: cleanSlackText(draft.summary, { singleLine: true }),
     sourceText: cleanedSourceText,
-    actions: draft.actions.map((action) =>
-      sanitizeDraftAction(action, cleanedSourceText),
-    ),
+    actions: draft.actions
+      .map((action) => sanitizeDraftAction(action, cleanedSourceText))
+      .filter((action): action is CrmActionRecord => action !== null),
     warnings: draft.warnings.map((warning) =>
       cleanSlackText(warning, { singleLine: true }),
     ),
@@ -883,6 +947,57 @@ const hasOpportunitySignal = (sourceText: string, facts: MeetingFacts): boolean 
   );
 };
 
+const getFirstActionByKind = (
+  draft: CrmWriteDraft,
+  kind: SupportedWriteKind,
+): CrmActionRecord | undefined => draft.actions.find((action) => action.kind === kind);
+
+const getStringField = (
+  value: unknown,
+): string | null => (typeof value === 'string' && value.trim().length > 0 ? value : null);
+
+const deriveDraftMatchContext = ({
+  draft,
+  facts,
+}: {
+  draft: CrmWriteDraft;
+  facts: MeetingFacts;
+}) => {
+  const companyAction = getFirstActionByKind(draft, 'company');
+  const personAction = getFirstActionByKind(draft, 'person');
+  const opportunityAction = getFirstActionByKind(draft, 'opportunity');
+  const noteAction = getFirstActionByKind(draft, 'note');
+  const taskAction = getFirstActionByKind(draft, 'task');
+
+  const companyName =
+    getStringField(companyAction?.data.name) ??
+    getStringField(opportunityAction?.data.companyName) ??
+    getStringField(personAction?.data.companyName) ??
+    getStringField(noteAction?.data.companyName) ??
+    getStringField(taskAction?.data.companyName) ??
+    facts.companyName;
+
+  const personName =
+    getStringField(personAction?.data.name) ??
+    getStringField(opportunityAction?.data.pointOfContactName) ??
+    getStringField(noteAction?.data.pointOfContactName) ??
+    getStringField(taskAction?.data.pointOfContactName) ??
+    facts.personName;
+
+  const opportunityName =
+    getStringField(opportunityAction?.data.name) ??
+    getStringField(noteAction?.data.opportunityName) ??
+    getStringField(taskAction?.data.opportunityName) ??
+    facts.opportunityName;
+
+  return {
+    companyName,
+    personName,
+    opportunityName,
+    solutionName: facts.solutionName,
+  };
+};
+
 const isSameNormalized = (
   left: string | null | undefined,
   right: string | null | undefined,
@@ -892,16 +1007,21 @@ const isSameNormalized = (
 
 const pickMatchingOpportunityCandidate = ({
   candidateContext,
-  facts,
+  context,
 }: {
   candidateContext: WriteCandidateContext;
-  facts: MeetingFacts;
+  context: {
+    companyName: string | null;
+    personName: string | null;
+    opportunityName: string | null;
+    solutionName: string | null;
+  };
 }) => {
   const scored = candidateContext.opportunities
     .map((opportunity: WriteCandidateContext['opportunities'][number]) => {
       let score = 0;
 
-      if (!isSameNormalized(opportunity.companyName ?? null, facts.companyName)) {
+      if (!isSameNormalized(opportunity.companyName ?? null, context.companyName)) {
         return {
           opportunity,
           score: -1,
@@ -911,23 +1031,23 @@ const pickMatchingOpportunityCandidate = ({
       score += 5;
 
       if (
-        facts.personName &&
-        isSameNormalized(opportunity.pointOfContactName ?? null, facts.personName)
+        context.personName &&
+        isSameNormalized(opportunity.pointOfContactName ?? null, context.personName)
       ) {
         score += 3;
       }
 
       if (
-        facts.solutionName &&
-        normalizeText(opportunity.name).includes(normalizeText(facts.solutionName))
+        context.solutionName &&
+        normalizeText(opportunity.name).includes(normalizeText(context.solutionName))
       ) {
         score += 2;
       }
 
       if (
-        facts.opportunityName &&
-        (normalizeText(opportunity.name).includes(normalizeText(facts.opportunityName)) ||
-          normalizeText(facts.opportunityName).includes(normalizeText(opportunity.name)))
+        context.opportunityName &&
+        (normalizeText(opportunity.name).includes(normalizeText(context.opportunityName)) ||
+          normalizeText(context.opportunityName).includes(normalizeText(opportunity.name)))
       ) {
         score += 2;
       }
@@ -957,17 +1077,22 @@ const applyCandidateLookups = ({
   candidateContext: WriteCandidateContext;
   facts: MeetingFacts;
 }): CrmWriteDraft => {
+  const context = deriveDraftMatchContext({
+    draft,
+    facts,
+  });
   const companyCandidate = candidateContext.companies.find((company) =>
-    isSameNormalized(company.name, facts.companyName),
+    isSameNormalized(company.name, context.companyName),
   );
   const personCandidate = candidateContext.people.find(
     (person: WriteCandidateContext['people'][number]) =>
-      isSameNormalized(person.fullName, facts.personName) &&
-      (!facts.companyName || isSameNormalized(person.companyName ?? null, facts.companyName)),
+      isSameNormalized(person.fullName, context.personName) &&
+      (!context.companyName ||
+        isSameNormalized(person.companyName ?? null, context.companyName)),
   );
   const opportunityCandidate = pickMatchingOpportunityCandidate({
     candidateContext,
-    facts,
+    context,
   });
 
   return {
@@ -1108,7 +1233,7 @@ const buildReviewFromDraft = ({
   };
 };
 
-const groundDraftWithMeetingFacts = ({
+const fillMissingActionsFromMeetingFacts = ({
   draft,
   sourceText,
   candidateContext,
@@ -1682,7 +1807,7 @@ export const buildCrmWriteDraft = async (
 
   if (!aiResult) {
     return enrichDraftWithPublicContext({
-      draft: groundDraftWithMeetingFacts({
+      draft: fillMissingActionsFromMeetingFacts({
         draft: fallback,
         sourceText: cleanedText,
         candidateContext,
@@ -1718,7 +1843,7 @@ export const buildCrmWriteDraft = async (
     },
     cleanedText,
   );
-  const groundedDraft = groundDraftWithMeetingFacts({
+  const groundedDraft = fillMissingActionsFromMeetingFacts({
     draft: sanitizedDraft,
     sourceText: cleanedText,
     candidateContext,
