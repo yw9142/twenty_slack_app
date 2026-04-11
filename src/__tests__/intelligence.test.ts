@@ -82,7 +82,8 @@ describe('intelligence fallbacks', () => {
         },
       ],
     });
-    expect(body?.system).toContain('Use the provided strict tool exactly once');
+    expect(body?.system).toContain('## Base Instructions');
+    expect(body?.system).toContain('## Planning Strategy');
   });
 
   it('should classify monthly summary questions as QUERY', async () => {
@@ -198,5 +199,103 @@ describe('intelligence fallbacks', () => {
 
     expect(body?.output_config?.format?.type).toBe('json_schema');
     expect(body?.output_config?.effort).toBe('medium');
+    expect(body?.system).toContain('## Base Instructions');
+    expect(body?.system).toContain('## Response Format');
+  });
+
+  it('should compact crm context before sending it to Anthropic synthesis', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              text: '정리했습니다.',
+              sections: [{ title: '의견', body: '다음 액션을 확인하세요.' }],
+            }),
+          },
+        ],
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    await synthesizeCrmQueryReply({
+      requestText: 'A은행 기회 상세히 알려줘',
+      classification: {
+        intentType: 'QUERY',
+        confidence: 0.8,
+        summary: '상세 조회',
+        queryCategory: 'OPPORTUNITY_STATUS',
+        detailLevel: 'DETAILED',
+        timeframe: 'ALL_TIME',
+        focusEntity: 'OPPORTUNITY',
+        entityHints: {
+          companies: ['A은행'],
+          people: [],
+          opportunities: [],
+          solutions: [],
+        },
+      },
+      crmContext: {
+        opportunity: {
+          name: 'A은행 Nutanix 전환',
+          amount: null,
+          pointOfContactName: '',
+          tags: [],
+          nextStep: 'POC 일정 확인',
+        },
+      },
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1];
+    const body =
+      request && typeof request === 'object' && 'body' in request
+        ? JSON.parse(String(request.body))
+        : null;
+    const userPrompt = body?.messages?.[0]?.content;
+
+    expect(userPrompt).toContain('"nextStep":"POC 일정 확인"');
+    expect(userPrompt).not.toContain('"amount":null');
+    expect(userPrompt).not.toContain('"pointOfContactName":""');
+    expect(userPrompt).not.toContain('"tags":[]');
+  });
+
+  it('should use a sectioned write draft system prompt', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              summary: '초안 요약',
+              confidence: 0.8,
+              sourceText: 'A은행 Nutanix 전환 기회',
+              actions: [],
+              warnings: [],
+            }),
+          },
+        ],
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    await buildCrmWriteDraft('A은행에 Nutanix 전환 기회가 생겼다');
+
+    const request = fetchMock.mock.calls[0]?.[1];
+    const body =
+      request && typeof request === 'object' && 'body' in request
+        ? JSON.parse(String(request.body))
+        : null;
+
+    expect(body?.system).toContain('## Base Instructions');
+    expect(body?.system).toContain('## Drafting Rules');
   });
 });

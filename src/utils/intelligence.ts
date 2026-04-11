@@ -1,4 +1,11 @@
 import { DEFAULT_ANTHROPIC_MODEL } from 'src/constants/slack-intake';
+import {
+  buildQueryPlannerSystemPrompt,
+  buildQueryPlannerUserPrompt,
+  buildQuerySynthesisSystemPrompt,
+  buildQuerySynthesisUserPrompt,
+  buildWriteDraftSystemPrompt,
+} from 'src/constants/slack-agent-prompts';
 import type {
   CrmActionRecord,
   CrmWriteDraft,
@@ -610,35 +617,11 @@ export const classifySlackText = async (
   const cleanedText = cleanSlackText(text);
   const fallback = buildFallbackClassification(cleanedText);
   const aiResult = await callAnthropicToolInput<SlackIntentClassification>({
-    systemPrompt: [
-      'You plan CRM assistant requests for a Korean B2B sales team.',
-      'Use the provided strict tool exactly once.',
-      'Ignore Slack mention tags like <@U123>, bot invocation prefixes, and slash command markers.',
-      'If the user asks for every item, says not to summarize, or asks for one-by-one detail, set detailLevel to DETAILED.',
-      'Use timeframe THIS_MONTH for 이번달/금월, RECENT for 최근/latest, otherwise ALL_TIME.',
-      'Use focusEntity OPPORTUNITY when the request is about deals, pipeline, opportunities, or sales chances.',
-      'Keep summary concise and in Korean.',
-    ].join(' '),
+    systemPrompt: buildQueryPlannerSystemPrompt(),
     toolName: CRM_QUERY_PLAN_TOOL_NAME,
     toolDescription: 'Plan the CRM query intent and answer style.',
     inputSchema: crmQueryPlanSchema,
-    userPrompt: [
-      '<instructions>',
-      'Infer the user intent, detail level, timeframe, and CRM focus.',
-      'When the request says "요약하지말고", "하나하나", or "상세하게", choose DETAILED.',
-      '</instructions>',
-      '<examples>',
-      '<example>',
-      '<message>이번달 신규 영업기회 몇 건이야?</message>',
-      '<expected>QUERY / MONTHLY_NEW / SUMMARY / THIS_MONTH / OPPORTUNITY</expected>',
-      '</example>',
-      '<example>',
-      '<message>전체 신규영업기회 정리해서 알려줘. 요약하지말고 하나하나 상세하게 알려줘</message>',
-      '<expected>QUERY / MONTHLY_NEW / DETAILED / THIS_MONTH / OPPORTUNITY</expected>',
-      '</example>',
-      '</examples>',
-      `<message>${cleanedText}</message>`,
-    ].join('\n'),
+    userPrompt: buildQueryPlannerUserPrompt(cleanedText),
   });
 
   if (!aiResult) {
@@ -705,39 +688,15 @@ export const synthesizeCrmQueryReply = async ({
 }): Promise<SlackReply | null> => {
   const cleanedText = cleanSlackText(requestText);
   const response = await callAnthropicStructuredJson<SynthesizedCrmReply>({
-    systemPrompt: [
-      'You are a Korean B2B CRM analyst assistant for enterprise sales teams.',
-      'Write the final Slack reply using only the CRM context provided by the user prompt.',
-      'Do not invent fields, people, amounts, or dates.',
-      'If a field is missing, say 미입력 or 미지정 explicitly.',
-      'If detailLevel is DETAILED, enumerate the records one by one instead of collapsing to counts only.',
-      'Always finish with a short 의견 section grounded in the data.',
-      'Prefer crisp Korean business prose over generic assistant phrasing.',
-    ].join(' '),
+    systemPrompt: buildQuerySynthesisSystemPrompt(),
     schema: crmReplySchema,
     maxTokens: ANTHROPIC_QUERY_REPLY_MAX_TOKENS,
     effort: 'medium',
-    userPrompt: [
-      '<instructions>',
-      'Read the request and CRM context carefully.',
-      'Use exact values from the CRM context.',
-      'For detailed requests, create a section that lists each relevant opportunity separately.',
-      'Do not omit relevant opportunity/company/contact details that already exist in the context.',
-      '</instructions>',
-      '<examples>',
-      '<example>',
-      '<request>이번달 신규 영업기회 몇 건이야?</request>',
-      '<response_shape>{"text":"이번달 신규 영업기회 3건입니다.","sections":[{"title":"이번달 신규 현황","body":"회사 3건, 담당자 4건, 영업기회 3건"},{"title":"의견","body":"담당자 매핑이 부족한 기회부터 점검하는 것이 좋습니다."}]}</response_shape>',
-      '</example>',
-      '<example>',
-      '<request>전체 신규영업기회 정리해서 알려줘. 요약하지말고 하나하나 상세하게 알려줘</request>',
-      '<response_shape>{"text":"이번달 신규 영업기회를 상세 정리했습니다.","sections":[{"title":"신규 영업기회 상세","body":"1. ...\\n2. ..."},{"title":"의견","body":"..." }]}</response_shape>',
-      '</example>',
-      '</examples>',
-      `<request>${cleanedText}</request>`,
-      `<classification>${JSON.stringify(classification)}</classification>`,
-      `<crm_context>${JSON.stringify(crmContext)}</crm_context>`,
-    ].join('\n'),
+    userPrompt: buildQuerySynthesisUserPrompt({
+      cleanedText,
+      classification,
+      crmContext,
+    }),
   });
 
   if (!response) {
@@ -753,20 +712,7 @@ export const buildCrmWriteDraft = async (
   const cleanedText = cleanSlackText(text);
   const fallback = buildFallbackDraft(cleanedText);
   const aiResult = await callAnthropicJson<CrmWriteDraft>({
-    systemPrompt: [
-      'You build a CRM write draft for a Korean B2B distributor CRM.',
-      'Return only valid JSON.',
-      'Ignore Slack mention tags like <@U123>, bot invocation prefixes, and slash command markers.',
-      'Top-level keys: summary, confidence, sourceText, actions, warnings.',
-      'actions is an array of { kind, operation, lookup?, data }.',
-      'kind must be one of company, person, opportunity, solution, companyRelationship, opportunityStakeholder, opportunitySolution, note, task.',
-      'operation must be create or update.',
-      'Prefer note and task records when information is incomplete.',
-      'Use concise Korean titles for note and task records.',
-      'Never include raw Slack mention tokens in titles, body text, summaries, or warnings.',
-      'Keep field names in English API style.',
-      'Use Korean in summary and warnings.',
-    ].join(' '),
+    systemPrompt: buildWriteDraftSystemPrompt(),
     userPrompt: cleanedText,
   });
 
