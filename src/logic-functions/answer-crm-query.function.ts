@@ -17,6 +17,8 @@ const handler = async ({
   return {
     classification,
     ...answer,
+    text: answer.reply.text,
+    blocks: answer.reply.blocks,
   };
 };
 

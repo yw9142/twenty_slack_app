@@ -3,6 +3,55 @@ import { getRequiredEnv } from 'src/utils/env';
 
 const SLACK_API_BASE_URL = 'https://slack.com/api';
 
+const parseJsonRecord = (value: string): Record<string, unknown> | null => {
+  if (value.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const describeSlackFailure = ({
+  fallback,
+  payload,
+}: {
+  fallback: string;
+  payload: Record<string, unknown> | null;
+}): string => {
+  if (!payload) {
+    return fallback;
+  }
+
+  if (typeof payload.error === 'string' && payload.error.trim().length > 0) {
+    return `${fallback} (${payload.error})`;
+  }
+
+  if (
+    typeof payload.message === 'string' &&
+    payload.message.trim().length > 0
+  ) {
+    return `${fallback} (${payload.message})`;
+  }
+
+  return fallback;
+};
+
+type SlackPostMessageResponse = {
+  channel?: string;
+  ts?: string;
+  ok?: boolean;
+};
+
 const slackApiFetch = async <TResponse extends Record<string, unknown>>({
   path,
   body,
@@ -20,13 +69,28 @@ const slackApiFetch = async <TResponse extends Record<string, unknown>>({
     body: JSON.stringify(body),
   });
 
+  const responseText = await response.text();
+  const responsePayload = parseJsonRecord(responseText);
+
   if (!response.ok) {
     throw new Error(
-      `Slack API request failed: ${response.status} ${response.statusText}`,
+      describeSlackFailure({
+        fallback: `Slack API request failed for ${path}: ${response.status} ${response.statusText}`,
+        payload: responsePayload,
+      }),
     );
   }
 
-  return (await response.json()) as TResponse;
+  if (responsePayload?.ok === false) {
+    throw new Error(
+      describeSlackFailure({
+        fallback: `Slack API request was rejected for ${path}`,
+        payload: responsePayload,
+      }),
+    );
+  }
+
+  return (responsePayload ?? {}) as TResponse;
 };
 
 export const postSlackResponseUrl = async ({
@@ -38,7 +102,7 @@ export const postSlackResponseUrl = async ({
   reply: SlackReply;
   replaceOriginal?: boolean;
 }): Promise<void> => {
-  await fetch(responseUrl, {
+  const response = await fetch(responseUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
@@ -49,6 +113,65 @@ export const postSlackResponseUrl = async ({
       blocks: reply.blocks,
     }),
   });
+
+  const responseText = (await response.text()).trim();
+  const responsePayload = parseJsonRecord(responseText);
+
+  if (!response.ok) {
+    throw new Error(
+      describeSlackFailure({
+        fallback: `Slack response_url request failed: ${response.status} ${response.statusText}`,
+        payload: responsePayload,
+      }),
+    );
+  }
+
+  if (responsePayload?.ok === false) {
+    throw new Error(
+      describeSlackFailure({
+        fallback: 'Slack response_url request was rejected',
+        payload: responsePayload,
+      }),
+    );
+  }
+
+  if (
+    !responsePayload &&
+    responseText.length > 0 &&
+    responseText.toLowerCase() !== 'ok'
+  ) {
+    throw new Error(`Slack response_url request was rejected (${responseText})`);
+  }
+};
+
+export const postSlackChannelMessage = async ({
+  channelId,
+  reply,
+  threadTs,
+}: {
+  channelId: string;
+  reply: SlackReply;
+  threadTs?: string | null;
+}): Promise<{
+  channelId: string;
+  threadTs: string | null;
+  messageTs: string | null;
+}> => {
+  const response = await slackApiFetch<SlackPostMessageResponse>({
+    path: '/chat.postMessage',
+    body: {
+      channel: channelId,
+      text: reply.text,
+      thread_ts: threadTs ?? undefined,
+      blocks: reply.blocks,
+    },
+  });
+
+  return {
+    channelId: response.channel ?? channelId,
+    threadTs: threadTs ?? null,
+    messageTs: typeof response.ts === 'string' ? response.ts : null,
+  };
 };
 
 export const postSlackThreadReply = async ({
@@ -60,14 +183,10 @@ export const postSlackThreadReply = async ({
   threadTs?: string | null;
   reply: SlackReply;
 }): Promise<void> => {
-  await slackApiFetch({
-    path: '/chat.postMessage',
-    body: {
-      channel: channelId,
-      text: reply.text,
-      thread_ts: threadTs ?? undefined,
-      blocks: reply.blocks,
-    },
+  await postSlackChannelMessage({
+    channelId,
+    threadTs,
+    reply,
   });
 };
 
