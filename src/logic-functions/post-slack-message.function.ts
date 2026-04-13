@@ -15,6 +15,10 @@ const handler = async ({
   blocks?: SlackBlock[];
   replaceOriginal?: boolean;
 }): Promise<Record<string, unknown>> => {
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('text is required to post a Slack reply');
+  }
+
   const slackRequest = await findSlackRequestById(slackRequestId);
 
   if (!slackRequest) {
