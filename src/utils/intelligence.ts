@@ -40,7 +40,8 @@ import {
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
 const ANTHROPIC_MAX_TOKENS = 1024;
-const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 2048;
+const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 4096;
+const ANTHROPIC_WRITE_DRAFT_MAX_TOKENS = 2048;
 const CRM_QUERY_PLAN_TOOL_NAME = 'plan_crm_query';
 
 type JsonSchema = Record<string, unknown>;
@@ -1385,7 +1386,7 @@ const fillMissingActionsFromMeetingFacts = ({
 const buildWebSearchTool = (): AnthropicToolDefinition => ({
   type: 'web_search_20250305',
   name: 'web_search',
-  max_uses: 4,
+  max_uses: 2,
   user_location: {
     type: 'approximate',
     city: 'Seoul',
@@ -1550,6 +1551,23 @@ const buildAnthropicRequestHeaders = (apiKey: string) => ({
   'x-api-key': apiKey,
 });
 
+const supportsAdaptiveThinking = (model: string): boolean =>
+  model === 'claude-sonnet-4-6' ||
+  model === 'claude-opus-4-6' ||
+  model === 'claude-mythos-preview';
+
+const buildAnthropicThinkingConfig = (
+  model: string,
+): { thinking: { type: 'adaptive'; display: 'omitted' } } | {} =>
+  supportsAdaptiveThinking(model)
+    ? {
+        thinking: {
+          type: 'adaptive',
+          display: 'omitted',
+        },
+      }
+    : {};
+
 const parseAnthropicTextContent = <TResponse extends Record<string, unknown>>(
   payload: AnthropicMessageResponse,
 ): TResponse | null => {
@@ -1574,7 +1592,7 @@ const callAnthropicStructuredJson = async <TResponse extends Record<string, unkn
   userPrompt,
   schema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
-  effort = 'medium',
+  effort = 'high',
   tools,
 }: {
   systemPrompt: string;
@@ -1597,6 +1615,7 @@ const callAnthropicStructuredJson = async <TResponse extends Record<string, unkn
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      ...buildAnthropicThinkingConfig(model),
       output_config: {
         effort,
         format: {
@@ -1631,7 +1650,7 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
   toolDescription,
   inputSchema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
-  effort = 'medium',
+  effort = 'high',
 }: {
   systemPrompt: string;
   userPrompt: string;
@@ -1654,6 +1673,7 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      ...buildAnthropicThinkingConfig(model),
       output_config: {
         effort,
       },
@@ -1769,7 +1789,8 @@ export const synthesizeCrmQueryReply = async ({
     systemPrompt: buildQuerySynthesisSystemPrompt(),
     schema: crmReplySchema,
     maxTokens: ANTHROPIC_QUERY_REPLY_MAX_TOKENS,
-    effort: 'medium',
+    effort: 'high',
+    tools: [buildWebSearchTool()],
     userPrompt: buildQuerySynthesisUserPrompt({
       cleanedText,
       classification,
@@ -1802,7 +1823,8 @@ export const buildCrmWriteDraft = async (
       meetingFacts,
     }),
     schema: crmWriteDraftSchema,
-    effort: 'medium',
+    maxTokens: ANTHROPIC_WRITE_DRAFT_MAX_TOKENS,
+    effort: 'high',
   });
 
   if (!aiResult) {

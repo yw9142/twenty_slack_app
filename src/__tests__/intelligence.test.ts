@@ -82,6 +82,9 @@ describe('intelligence fallbacks', () => {
 
     expect(body).toMatchObject({
       model: 'claude-test-model',
+      output_config: {
+        effort: 'high',
+      },
       tools: [
         expect.objectContaining({
           name: 'plan_crm_query',
@@ -97,6 +100,7 @@ describe('intelligence fallbacks', () => {
     });
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Planning Strategy');
+    expect(body?.system).toContain('## Intent Classification Rules');
   });
 
   it('should classify monthly summary questions as QUERY', async () => {
@@ -286,9 +290,23 @@ describe('intelligence fallbacks', () => {
         : null;
 
     expect(body?.output_config?.format?.type).toBe('json_schema');
-    expect(body?.output_config?.effort).toBe('medium');
+    expect(body?.output_config?.effort).toBe('high');
+    expect(body?.thinking).toMatchObject({
+      type: 'adaptive',
+      display: 'omitted',
+    });
+    expect(body?.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'web_search_20250305',
+          name: 'web_search',
+          max_uses: 2,
+        }),
+      ]),
+    );
     expect(body?.system).toContain('## Base Instructions');
-    expect(body?.system).toContain('## Response Format');
+    expect(body?.system).toContain('## Slack Reply Contract');
+    expect(body?.system).toContain('## Optional Web Search');
   });
 
   it('should compact crm context before sending it to Anthropic synthesis', async () => {
@@ -396,6 +414,13 @@ describe('intelligence fallbacks', () => {
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Drafting Rules');
     expect(body?.system).toContain('## Matching Strategy');
+    expect(body?.system).toContain('## Action Construction Rules');
+    expect(body?.system).toContain('"blocknote": null');
+    expect(body?.output_config?.effort).toBe('high');
+    expect(body?.thinking).toMatchObject({
+      type: 'adaptive',
+      display: 'omitted',
+    });
     expect(body?.messages?.[0]?.content).toContain('<candidate_context>');
     expect(body?.messages?.[0]?.content).toContain('A은행 기존 VDI 전환');
   });
