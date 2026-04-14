@@ -307,6 +307,52 @@ const companyDefinition = {
       relation: null,
       morphRelations: null,
     },
+    {
+      id: 'company-licenses-field',
+      universalIdentifier: 'company-licenses-field-uid',
+      type: 'RELATION',
+      name: 'licenses',
+      label: '라이선스',
+      description: null,
+      icon: null,
+      isCustom: false,
+      isActive: true,
+      isSystem: false,
+      isUIReadOnly: false,
+      isNullable: true,
+      isUnique: false,
+      createdAt: '2026-04-14T00:00:00.000Z',
+      updatedAt: '2026-04-14T00:00:00.000Z',
+      defaultValue: null,
+      options: null,
+      settings: null,
+      isLabelSyncedWithName: false,
+      morphId: null,
+      applicationId: 'app-id',
+      objectMetadataId: 'company-object',
+      relation: {
+        type: 'ONE_TO_MANY',
+        sourceObjectMetadata: {
+          id: 'company-object',
+          nameSingular: 'company',
+          namePlural: 'companies',
+        },
+        targetObjectMetadata: {
+          id: 'license-object',
+          nameSingular: 'license',
+          namePlural: 'licenses',
+        },
+        sourceFieldMetadata: {
+          id: 'company-licenses-field',
+          name: 'licenses',
+        },
+        targetFieldMetadata: {
+          id: 'field-vendor',
+          name: 'vendorCompany',
+        },
+      },
+      morphRelations: null,
+    },
   ],
 } as const;
 
@@ -461,6 +507,12 @@ describe('dynamic object query reply', () => {
         }),
       }),
     );
+    const queryNode =
+      coreQuery.mock.calls[0]?.[0]?.licenses?.edges?.node?.vendorCompany as
+        | Record<string, unknown>
+        | undefined;
+    expect(queryNode).toBeDefined();
+    expect(queryNode).not.toHaveProperty('licenses');
   });
 
   it('returns handled false when the text does not point at a queryable object', async () => {

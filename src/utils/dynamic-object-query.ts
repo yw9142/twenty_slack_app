@@ -50,6 +50,7 @@ const ROOT_FIELD_LIMIT = 12;
 const NESTED_FIELD_LIMIT = 4;
 const SUMMARY_RECORD_LIMIT = 8;
 const DETAIL_RECORD_LIMIT = 20;
+const MAX_RELATION_SELECTION_DEPTH = 1;
 
 const SIMPLE_FIELD_TYPES = new Set<ObjectFieldMetadata['type']>([
   'ARRAY',
@@ -423,10 +424,52 @@ const toCatalogItem = (definition: ObjectDefinition): ObjectCatalogItem => ({
   isLabelSyncedWithName: definition.isLabelSyncedWithName,
 });
 
+const buildShallowSelection = (
+  definition: ObjectDefinition | null,
+): GraphQlSelection => {
+  const selection: GraphQlSelection = {
+    id: true,
+  };
+
+  if (!definition) {
+    selection.name = true;
+    return selection;
+  }
+
+  const preferredField =
+    definition.fields.find(
+      (field) => field.id === definition.labelIdentifierFieldMetadataId,
+    ) ??
+    definition.fields.find((field) => field.name === 'name') ??
+    definition.fields.find((field) => field.name === 'title') ??
+    definition.fields.find((field) => SIMPLE_FIELD_TYPES.has(field.type)) ??
+    null;
+
+  if (!preferredField) {
+    selection.name = true;
+    return selection;
+  }
+
+  if (SIMPLE_FIELD_TYPES.has(preferredField.type)) {
+    selection[preferredField.name] = true;
+    return selection;
+  }
+
+  if (preferredField.type in COMPOSITE_FIELD_SELECTIONS) {
+    selection[preferredField.name] =
+      COMPOSITE_FIELD_SELECTIONS[preferredField.type] ?? true;
+    return selection;
+  }
+
+  selection.name = true;
+  return selection;
+};
+
 const buildFieldSelectionForDefinition = (
   definition: ObjectDefinition,
   definitionsById: Map<string, ObjectDefinition>,
   depth = 0,
+  ancestry: string[] = [definition.id],
 ): GraphQlSelection => {
   const selection: GraphQlSelection = {
     id: true,
@@ -460,7 +503,12 @@ const buildFieldSelectionForDefinition = (
       continue;
     }
 
-    const fieldSelection = buildFieldSelectionValue(field, definitionsById, depth);
+    const fieldSelection = buildFieldSelectionValue(
+      field,
+      definitionsById,
+      depth,
+      ancestry,
+    );
 
     if (fieldSelection === null) {
       continue;
@@ -477,7 +525,12 @@ const buildFieldSelectionForDefinition = (
       }
 
       if (!Object.prototype.hasOwnProperty.call(selection, field.name)) {
-        const fieldSelection = buildFieldSelectionValue(field, definitionsById, depth);
+        const fieldSelection = buildFieldSelectionValue(
+          field,
+          definitionsById,
+          depth,
+          ancestry,
+        );
         if (fieldSelection !== null) {
           selection[field.name] = fieldSelection;
         }
@@ -492,6 +545,7 @@ const buildFieldSelectionValue = (
   field: ObjectFieldMetadata,
   definitionsById: Map<string, ObjectDefinition>,
   depth: number,
+  ancestry: string[],
 ): GraphQlSelection | boolean | null => {
   if (SIMPLE_FIELD_TYPES.has(field.type)) {
     return true;
@@ -502,11 +556,19 @@ const buildFieldSelectionValue = (
   }
 
   if (field.type === 'RELATION') {
-    return buildRelationSelection(field, definitionsById, depth);
+    if (depth >= MAX_RELATION_SELECTION_DEPTH) {
+      return null;
+    }
+
+    return buildRelationSelection(field, definitionsById, depth, ancestry);
   }
 
   if (field.type === 'MORPH_RELATION') {
-    return buildMorphRelationSelection(field, definitionsById, depth);
+    if (depth >= MAX_RELATION_SELECTION_DEPTH) {
+      return null;
+    }
+
+    return buildMorphRelationSelection(field, definitionsById, depth, ancestry);
   }
 
   return null;
@@ -516,16 +578,21 @@ const buildRelationSelection = (
   field: ObjectFieldMetadata,
   definitionsById: Map<string, ObjectDefinition>,
   depth: number,
+  ancestry: string[],
 ): GraphQlSelection => {
   const relationType = field.relation?.type;
   const targetId = field.relation?.targetObjectMetadata?.id;
   const targetDefinition = targetId ? definitionsById.get(targetId) ?? null : null;
-  const nestedSelection = targetDefinition
-    ? buildFieldSelectionForDefinition(targetDefinition, definitionsById, depth + 1)
-    : {
-        id: true,
-        name: true,
-      };
+  const shouldUseShallowSelection =
+    targetDefinition === null ||
+    ancestry.includes(targetDefinition.id) ||
+    depth >= MAX_RELATION_SELECTION_DEPTH;
+  const nestedSelection = shouldUseShallowSelection
+    ? buildShallowSelection(targetDefinition)
+    : buildFieldSelectionForDefinition(targetDefinition, definitionsById, depth + 1, [
+        ...ancestry,
+        targetDefinition.id,
+      ]);
 
   if (relationType === 'ONE_TO_MANY') {
     return {
@@ -542,6 +609,7 @@ const buildMorphRelationSelection = (
   field: ObjectFieldMetadata,
   definitionsById: Map<string, ObjectDefinition>,
   depth: number,
+  ancestry: string[],
 ): GraphQlSelection => {
   const firstMorphRelation =
     field.morphRelations?.find((relation) => relation.targetObjectMetadata?.id) ??
@@ -550,17 +618,18 @@ const buildMorphRelationSelection = (
   const targetDefinition = targetId ? definitionsById.get(targetId) ?? null : null;
 
   if (!targetDefinition) {
-    return {
-      id: true,
-      name: true,
-    };
+    return buildShallowSelection(null);
   }
 
-  const nestedSelection = buildFieldSelectionForDefinition(
-    targetDefinition,
-    definitionsById,
-    depth + 1,
-  );
+  const shouldUseShallowSelection =
+    ancestry.includes(targetDefinition.id) ||
+    depth >= MAX_RELATION_SELECTION_DEPTH;
+  const nestedSelection = shouldUseShallowSelection
+    ? buildShallowSelection(targetDefinition)
+    : buildFieldSelectionForDefinition(targetDefinition, definitionsById, depth + 1, [
+        ...ancestry,
+        targetDefinition.id,
+      ]);
 
   if (firstMorphRelation?.type === 'ONE_TO_MANY') {
     return {
