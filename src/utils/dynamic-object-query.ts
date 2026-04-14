@@ -17,7 +17,6 @@ import type {
 import {
   cleanSlackText,
   normalizeText,
-  truncate,
   uniqueNonEmpty,
 } from 'src/utils/strings';
 
@@ -51,7 +50,6 @@ const ROOT_FIELD_LIMIT = 12;
 const NESTED_FIELD_LIMIT = 4;
 const SUMMARY_RECORD_LIMIT = 8;
 const DETAIL_RECORD_LIMIT = 20;
-const FETCH_RECORD_LIMIT = 100;
 
 const SIMPLE_FIELD_TYPES = new Set<ObjectFieldMetadata['type']>([
   'ARRAY',
@@ -123,32 +121,6 @@ const COMPOSITE_FIELD_SELECTIONS: Partial<
     markdown: true,
   },
 };
-
-const QUERY_KEYWORDS = [
-  'company',
-  'person',
-  'opportunity',
-  'license',
-  'task',
-  'note',
-  'customer',
-  'client',
-  'renewal',
-  'renew',
-  'expiry',
-  'expiration',
-  'risk',
-  'status',
-  'stage',
-  'pipeline',
-  'contract',
-  'product',
-  'vendor',
-  'solution',
-  'activity',
-  'due',
-  'deadline',
-];
 
 const splitSlackBodyIntoChunks = (
   body: string,
