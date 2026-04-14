@@ -1,5 +1,7 @@
 import { DEFAULT_ANTHROPIC_MODEL } from 'src/constants/slack-intake';
 import {
+  buildObjectQueryPlannerSystemPrompt,
+  buildObjectQueryPlannerUserPrompt,
   buildQueryPlannerSystemPrompt,
   buildQueryPlannerUserPrompt,
   buildQuerySynthesisSystemPrompt,
@@ -43,6 +45,11 @@ const ANTHROPIC_MAX_TOKENS = 1024;
 const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 4096;
 const ANTHROPIC_WRITE_DRAFT_MAX_TOKENS = 2048;
 const CRM_QUERY_PLAN_TOOL_NAME = 'plan_crm_query';
+const CRM_OBJECT_QUERY_PLAN_TOOL_NAME = 'plan_crm_object_query';
+const ANTHROPIC_CACHE_CONTROL = {
+  type: 'ephemeral',
+  ttl: '5m',
+} as const;
 
 type JsonSchema = Record<string, unknown>;
 
@@ -92,6 +99,31 @@ type PublicEnrichmentResponse = {
 };
 
 type MeetingFacts = ReturnType<typeof extractMeetingFacts>;
+
+export type DynamicObjectCatalogItem = {
+  id: string;
+  nameSingular: string;
+  namePlural: string;
+  labelSingular: string;
+  labelPlural: string;
+  description?: string | null;
+};
+
+export type DynamicObjectQueryPlan = {
+  handled: boolean;
+  confidence: number;
+  summary: string;
+  reportMode:
+    | 'PRIORITY_REPORT'
+    | 'STATUS_REPORT'
+    | 'SUMMARY_REPORT'
+    | 'LIST_REPORT';
+  targetObjectId?: string | null;
+  targetObjectNameSingular?: string | null;
+  targetObjectNamePlural?: string | null;
+  targetObjectLabelSingular?: string | null;
+  targetObjectLabelPlural?: string | null;
+};
 
 const SUPPORTED_WRITE_KINDS = [
   'company',
@@ -178,6 +210,7 @@ const crmQueryPlanSchema = {
         'MONTHLY_NEW',
         'OPPORTUNITY_STATUS',
         'RISK_REVIEW',
+        'LICENSE_PRIORITY',
         'PIPELINE_SUMMARY',
         'RECORD_LOOKUP',
         'GENERAL',
@@ -193,7 +226,15 @@ const crmQueryPlanSchema = {
     },
     focusEntity: {
       type: 'string',
-      enum: ['GENERAL', 'COMPANY', 'PERSON', 'OPPORTUNITY', 'TASK', 'NOTE'],
+      enum: [
+        'GENERAL',
+        'COMPANY',
+        'PERSON',
+        'LICENSE',
+        'OPPORTUNITY',
+        'TASK',
+        'NOTE',
+      ],
     },
     entityHints: {
       type: 'object',
@@ -229,6 +270,31 @@ const crmQueryPlanSchema = {
     'focusEntity',
     'entityHints',
   ],
+  additionalProperties: false,
+} as const satisfies JsonSchema;
+
+const dynamicObjectQueryPlanSchema = {
+  type: 'object',
+  properties: {
+    handled: { type: 'boolean' },
+    confidence: { type: 'number' },
+    summary: { type: 'string' },
+    reportMode: {
+      type: 'string',
+      enum: [
+        'PRIORITY_REPORT',
+        'STATUS_REPORT',
+        'SUMMARY_REPORT',
+        'LIST_REPORT',
+      ],
+    },
+    targetObjectId: { type: 'string' },
+    targetObjectNameSingular: { type: 'string' },
+    targetObjectNamePlural: { type: 'string' },
+    targetObjectLabelSingular: { type: 'string' },
+    targetObjectLabelPlural: { type: 'string' },
+  },
+  required: ['handled', 'confidence', 'summary', 'reportMode'],
   additionalProperties: false,
 } as const satisfies JsonSchema;
 
@@ -397,6 +463,21 @@ const determineFocusEntity = (
   entityHints: EntityHints,
 ): QueryFocusEntity => {
   if (
+    containsAny(normalized, [
+      '라이선스',
+      'license',
+      '갱신',
+      'renewal',
+      '만료',
+      'expiry',
+      'seat',
+      '좌석',
+    ])
+  ) {
+    return 'LICENSE';
+  }
+
+  if (
     entityHints.opportunities.length > 0 ||
     containsAny(normalized, ['영업기회', '기회', '딜', '파이프라인'])
   ) {
@@ -432,6 +513,12 @@ const buildFallbackClassification = (
 
   if (
     containsAny(normalized, [
+      '라이선스',
+      'license',
+      '갱신',
+      'renewal',
+      '만료',
+      'expiry',
       '이번달',
       '몇 건',
       '상태',
@@ -450,13 +537,22 @@ const buildFallbackClassification = (
         intentType: 'QUERY',
         confidence: 0.68,
         summary: 'CRM 조회 요청으로 분류했습니다.',
-      queryCategory: containsAny(normalized, ['이번달', '신규'])
-        ? 'MONTHLY_NEW'
-        : containsAny(normalized, ['리스크', '누락', '정체'])
-          ? 'RISK_REVIEW'
-          : containsAny(normalized, ['상태', '단계', '딜'])
-            ? 'OPPORTUNITY_STATUS'
-            : 'GENERAL',
+        queryCategory: containsAny(normalized, [
+          '라이선스',
+          'license',
+          '갱신',
+          'renewal',
+          '만료',
+          'expiry',
+        ])
+          ? 'LICENSE_PRIORITY'
+          : containsAny(normalized, ['이번달', '신규'])
+            ? 'MONTHLY_NEW'
+            : containsAny(normalized, ['리스크', '누락', '정체'])
+              ? 'RISK_REVIEW'
+              : containsAny(normalized, ['상태', '단계', '딜'])
+                ? 'OPPORTUNITY_STATUS'
+                : 'GENERAL',
         detailLevel: determineDetailLevel(normalized),
         timeframe: determineTimeframe(normalized),
         focusEntity: determineFocusEntity(normalized, entityHints),
@@ -1615,6 +1711,7 @@ const callAnthropicStructuredJson = async <TResponse extends Record<string, unkn
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      cache_control: ANTHROPIC_CACHE_CONTROL,
       ...buildAnthropicThinkingConfig(model),
       output_config: {
         effort,
@@ -1673,6 +1770,7 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
+      cache_control: ANTHROPIC_CACHE_CONTROL,
       ...buildAnthropicThinkingConfig(model),
       output_config: {
         effort,
@@ -1738,6 +1836,7 @@ export const classifySlackText = async (
     focusEntity:
       aiResult.focusEntity === 'COMPANY' ||
       aiResult.focusEntity === 'PERSON' ||
+      aiResult.focusEntity === 'LICENSE' ||
       aiResult.focusEntity === 'OPPORTUNITY' ||
       aiResult.focusEntity === 'TASK' ||
       aiResult.focusEntity === 'NOTE'
@@ -1752,28 +1851,153 @@ export const classifySlackText = async (
   };
 };
 
+export const planDynamicObjectQuery = async ({
+  text,
+  objectCatalog,
+}: {
+  text: string;
+  objectCatalog: DynamicObjectCatalogItem[];
+}): Promise<DynamicObjectQueryPlan | null> => {
+  if (objectCatalog.length === 0) {
+    return null;
+  }
+
+  const cleanedText = cleanSlackText(text);
+  const aiResult = await callAnthropicToolInput<DynamicObjectQueryPlan>({
+    systemPrompt: buildObjectQueryPlannerSystemPrompt(),
+    toolName: CRM_OBJECT_QUERY_PLAN_TOOL_NAME,
+    toolDescription: 'Choose the best Twenty CRM object to query for this Slack request.',
+    inputSchema: dynamicObjectQueryPlanSchema,
+    userPrompt: buildObjectQueryPlannerUserPrompt({
+      cleanedText,
+      objectCatalog,
+    }),
+  });
+
+  if (!aiResult) {
+    return null;
+  }
+
+  return {
+    handled: Boolean(aiResult.handled),
+    confidence:
+      typeof aiResult.confidence === 'number' ? aiResult.confidence : 0.5,
+    summary:
+      typeof aiResult.summary === 'string'
+        ? aiResult.summary
+        : '동적 객체 질의 계획을 만들었습니다.',
+    reportMode:
+      aiResult.reportMode === 'PRIORITY_REPORT' ||
+      aiResult.reportMode === 'STATUS_REPORT' ||
+      aiResult.reportMode === 'SUMMARY_REPORT' ||
+      aiResult.reportMode === 'LIST_REPORT'
+        ? aiResult.reportMode
+        : 'SUMMARY_REPORT',
+    targetObjectId:
+      typeof aiResult.targetObjectId === 'string'
+        ? aiResult.targetObjectId
+        : null,
+    targetObjectNameSingular:
+      typeof aiResult.targetObjectNameSingular === 'string'
+        ? aiResult.targetObjectNameSingular
+        : null,
+    targetObjectNamePlural:
+      typeof aiResult.targetObjectNamePlural === 'string'
+        ? aiResult.targetObjectNamePlural
+        : null,
+    targetObjectLabelSingular:
+      typeof aiResult.targetObjectLabelSingular === 'string'
+        ? aiResult.targetObjectLabelSingular
+        : null,
+    targetObjectLabelPlural:
+      typeof aiResult.targetObjectLabelPlural === 'string'
+        ? aiResult.targetObjectLabelPlural
+        : null,
+  };
+};
+
 const buildSlackReplyFromSections = (
   response: SynthesizedCrmReply,
-): SlackReply => ({
-  text: cleanSlackText(response.text, { singleLine: true }),
-  blocks: response.sections
-    .filter(
-      (section) =>
-        typeof section.title === 'string' &&
-        section.title.trim().length > 0 &&
-        typeof section.body === 'string' &&
-        section.body.trim().length > 0,
-    )
-    .map((section) => ({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text:
-          `*${cleanSlackText(section.title, { singleLine: true })}*\n` +
-          cleanSlackText(section.body),
-      },
-    })),
-});
+): SlackReply => {
+  const splitSlackBody = (body: string, maxLength = 2800): string[] => {
+    if (body.length <= maxLength) {
+      return [body];
+    }
+
+    const paragraphs = body.split('\n\n');
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const paragraph of paragraphs) {
+      const candidate = current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+
+      if (candidate.length <= maxLength) {
+        current = candidate;
+        continue;
+      }
+
+      if (current.length > 0) {
+        chunks.push(current);
+        current = '';
+      }
+
+      if (paragraph.length <= maxLength) {
+        current = paragraph;
+        continue;
+      }
+
+      const lines = paragraph.split('\n');
+      let lineChunk = '';
+
+      for (const line of lines) {
+        const lineCandidate =
+          lineChunk.length === 0 ? line : `${lineChunk}\n${line}`;
+
+        if (lineCandidate.length <= maxLength) {
+          lineChunk = lineCandidate;
+          continue;
+        }
+
+        if (lineChunk.length > 0) {
+          chunks.push(lineChunk);
+        }
+
+        lineChunk = line;
+      }
+
+      current = lineChunk;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current);
+    }
+
+    return chunks;
+  };
+
+  return {
+    text: cleanSlackText(response.text, { singleLine: true }),
+    blocks: response.sections
+      .filter(
+        (section) =>
+          typeof section.title === 'string' &&
+          section.title.trim().length > 0 &&
+          typeof section.body === 'string' &&
+          section.body.trim().length > 0,
+      )
+      .flatMap((section) =>
+        splitSlackBody(cleanSlackText(section.body)).map((bodyChunk, index) => ({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `*${cleanSlackText(section.title, { singleLine: true })}${index === 0 ? '' : ' (계속)'}*\n` +
+              bodyChunk,
+          },
+        })),
+      ),
+  };
+};
 
 export const synthesizeCrmQueryReply = async ({
   requestText,

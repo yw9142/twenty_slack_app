@@ -1,5 +1,6 @@
 import type {
   BasicCompanyRecord,
+  BasicLicenseRecord,
   BasicNoteRecord,
   BasicOpportunityRecord,
   BasicPersonRecord,
@@ -8,6 +9,7 @@ import type {
   SlackReply,
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
+import { buildDynamicObjectQueryReply } from 'src/utils/dynamic-object-query';
 import { synthesizeCrmQueryReply } from 'src/utils/intelligence';
 import { normalizeText, truncate } from 'src/utils/strings';
 
@@ -113,6 +115,73 @@ const opportunityBasicSelection = {
   amount: {
     amountMicros: true,
     currencyCode: true,
+  },
+} as const;
+
+const licenseRichSelection = {
+  id: true,
+  name: true,
+  createdAt: true,
+  updatedAt: true,
+  licenseType: true,
+  vendorName: true,
+  productName: true,
+  expiryDate: true,
+  startDate: true,
+  seatCount: true,
+  contractValue: {
+    amountMicros: true,
+    currencyCode: true,
+  },
+  currencyCode: true,
+  renewalStage: true,
+  renewalRiskLevel: true,
+  lastActivityAt: true,
+  nextContactDueAt: true,
+  autoRenewal: true,
+  notesSummary: true,
+  vendorCompany: {
+    name: true,
+  },
+  partnerCompany: {
+    name: true,
+  },
+  endCustomerCompany: {
+    name: true,
+  },
+  solution: {
+    name: true,
+  },
+  renewalOpportunity: {
+    name: true,
+    stage: true,
+  },
+} as const;
+
+const licenseBasicSelection = {
+  id: true,
+  name: true,
+  createdAt: true,
+  updatedAt: true,
+  licenseType: true,
+  vendorName: true,
+  productName: true,
+  expiryDate: true,
+  startDate: true,
+  seatCount: true,
+  contractValue: {
+    amountMicros: true,
+    currencyCode: true,
+  },
+  currencyCode: true,
+  renewalStage: true,
+  renewalRiskLevel: true,
+  lastActivityAt: true,
+  nextContactDueAt: true,
+  autoRenewal: true,
+  notesSummary: true,
+  endCustomerCompany: {
+    name: true,
   },
 } as const;
 
@@ -369,6 +438,99 @@ export const fetchOpportunities = async (): Promise<BasicOpportunityRecord[]> =>
       typeof (record.amount as { currencyCode?: unknown }).currencyCode ===
         'string'
         ? ((record.amount as { currencyCode?: string }).currencyCode ?? null)
+        : null,
+  }));
+};
+
+export const fetchLicenses = async (): Promise<BasicLicenseRecord[]> => {
+  const records = await queryWithFallback<Record<string, unknown>>({
+    root: 'licenses',
+    richSelection: licenseRichSelection,
+    fallbackSelection: licenseBasicSelection,
+  });
+
+  return records.map((record) => ({
+    id: typeof record.id === 'string' ? record.id : '',
+    name: typeof record.name === 'string' ? record.name : '이름 없는 라이선스',
+    createdAt: typeof record.createdAt === 'string' ? record.createdAt : null,
+    updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : null,
+    licenseType:
+      typeof record.licenseType === 'string' ? record.licenseType : null,
+    vendorName:
+      typeof record.vendorName === 'string' ? record.vendorName : null,
+    productName:
+      typeof record.productName === 'string' ? record.productName : null,
+    expiryDate:
+      typeof record.expiryDate === 'string' ? record.expiryDate : null,
+    startDate: typeof record.startDate === 'string' ? record.startDate : null,
+    seatCount: typeof record.seatCount === 'number' ? record.seatCount : null,
+    contractValueMicros:
+      record.contractValue &&
+      typeof record.contractValue === 'object' &&
+      typeof (record.contractValue as { amountMicros?: unknown }).amountMicros ===
+        'number'
+        ? ((record.contractValue as { amountMicros?: number }).amountMicros ?? null)
+        : null,
+    currencyCode:
+      record.contractValue &&
+      typeof record.contractValue === 'object' &&
+      typeof (record.contractValue as { currencyCode?: unknown }).currencyCode ===
+        'string'
+        ? ((record.contractValue as { currencyCode?: string }).currencyCode ?? null)
+        : typeof record.currencyCode === 'string'
+          ? record.currencyCode
+          : null,
+    renewalStage:
+      typeof record.renewalStage === 'string' ? record.renewalStage : null,
+    renewalRiskLevel:
+      typeof record.renewalRiskLevel === 'string'
+        ? record.renewalRiskLevel
+        : null,
+    lastActivityAt:
+      typeof record.lastActivityAt === 'string' ? record.lastActivityAt : null,
+    nextContactDueAt:
+      typeof record.nextContactDueAt === 'string'
+        ? record.nextContactDueAt
+        : null,
+    autoRenewal:
+      typeof record.autoRenewal === 'boolean' ? record.autoRenewal : null,
+    notesSummary:
+      typeof record.notesSummary === 'string' ? record.notesSummary : null,
+    vendorCompanyName:
+      record.vendorCompany &&
+      typeof record.vendorCompany === 'object' &&
+      typeof (record.vendorCompany as { name?: unknown }).name === 'string'
+        ? ((record.vendorCompany as { name?: string }).name ?? null)
+        : null,
+    partnerCompanyName:
+      record.partnerCompany &&
+      typeof record.partnerCompany === 'object' &&
+      typeof (record.partnerCompany as { name?: unknown }).name === 'string'
+        ? ((record.partnerCompany as { name?: string }).name ?? null)
+        : null,
+    endCustomerCompanyName:
+      record.endCustomerCompany &&
+      typeof record.endCustomerCompany === 'object' &&
+      typeof (record.endCustomerCompany as { name?: unknown }).name === 'string'
+        ? ((record.endCustomerCompany as { name?: string }).name ?? null)
+        : null,
+    solutionName:
+      record.solution &&
+      typeof record.solution === 'object' &&
+      typeof (record.solution as { name?: unknown }).name === 'string'
+        ? ((record.solution as { name?: string }).name ?? null)
+        : null,
+    renewalOpportunityName:
+      record.renewalOpportunity &&
+      typeof record.renewalOpportunity === 'object' &&
+      typeof (record.renewalOpportunity as { name?: unknown }).name === 'string'
+        ? ((record.renewalOpportunity as { name?: string }).name ?? null)
+        : null,
+    renewalOpportunityStage:
+      record.renewalOpportunity &&
+      typeof record.renewalOpportunity === 'object' &&
+      typeof (record.renewalOpportunity as { stage?: unknown }).stage === 'string'
+        ? ((record.renewalOpportunity as { stage?: string }).stage ?? null)
         : null,
   }));
 };
@@ -648,6 +810,241 @@ const formatCurrency = ({
   return `${formatted} ${currencyCode ?? 'KRW'}`;
 };
 
+const LICENSE_STAGE_LABELS: Record<string, string> = {
+  ACTIVE: '활성',
+  D90: '만료 90일 전',
+  D45: '만료 45일 전',
+  D30: '만료 30일 전',
+  IN_RENEWAL: '갱신 진행중',
+  PENDING_PROVISIONING: '발급 대기',
+  RENEWED: '갱신 완료',
+  EXPIRED: '만료',
+  CHURNED: '이탈',
+};
+
+const LICENSE_RISK_LABELS: Record<string, string> = {
+  LOW: '낮음',
+  WATCH: '주의',
+  HIGH: '높음',
+};
+
+const LICENSE_TYPE_LABELS: Record<string, string> = {
+  SUBSCRIPTION: '구독',
+  SUPPORT_RENEWAL: '유지보수 갱신',
+  PERPETUAL: '영구 라이선스',
+  USAGE_BASED: '사용량 기반',
+  OTHER: '기타',
+};
+
+const formatLicenseCurrency = ({
+  contractValueMicros,
+  currencyCode,
+}: Pick<BasicLicenseRecord, 'contractValueMicros' | 'currencyCode'>): string => {
+  if (typeof contractValueMicros !== 'number') {
+    return '미입력';
+  }
+
+  const amount = contractValueMicros / 1_000_000;
+  const formatted = new Intl.NumberFormat('ko-KR').format(amount);
+
+  return `${formatted} ${currencyCode ?? 'KRW'}`;
+};
+
+const formatDateValue = (value: string | null | undefined): string =>
+  typeof value === 'string' && value.trim().length > 0 ? value.slice(0, 10) : '미입력';
+
+const parseDateValue = (value: string | null | undefined): Date | null => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const diffInDaysFromNow = (value: string | null | undefined): number | null => {
+  const parsed = parseDateValue(value);
+
+  if (!parsed) {
+    return null;
+  }
+
+  return Math.floor((parsed.getTime() - Date.now()) / 86_400_000);
+};
+
+const daysSinceNow = (value: string | null | undefined): number | null => {
+  const parsed = parseDateValue(value);
+
+  if (!parsed) {
+    return null;
+  }
+
+  return Math.floor((Date.now() - parsed.getTime()) / 86_400_000);
+};
+
+const formatLicenseStage = (value: string | null | undefined): string =>
+  (value && LICENSE_STAGE_LABELS[value]) || value || '미입력';
+
+const formatLicenseRisk = (value: string | null | undefined): string =>
+  (value && LICENSE_RISK_LABELS[value]) || value || '미입력';
+
+const formatLicenseType = (value: string | null | undefined): string =>
+  (value && LICENSE_TYPE_LABELS[value]) || value || '미입력';
+
+const buildLicensePriorityScore = (license: BasicLicenseRecord): number => {
+  let score = 0;
+
+  switch (license.renewalRiskLevel) {
+    case 'HIGH':
+      score += 80;
+      break;
+    case 'WATCH':
+      score += 45;
+      break;
+    case 'LOW':
+      score += 10;
+      break;
+    default:
+      score += 15;
+      break;
+  }
+
+  switch (license.renewalStage) {
+    case 'EXPIRED':
+      score += 90;
+      break;
+    case 'D30':
+      score += 60;
+      break;
+    case 'D45':
+      score += 45;
+      break;
+    case 'D90':
+      score += 25;
+      break;
+    case 'IN_RENEWAL':
+      score += 20;
+      break;
+    case 'ACTIVE':
+      score += 10;
+      break;
+    case 'RENEWED':
+      score -= 25;
+      break;
+    case 'CHURNED':
+      score -= 35;
+      break;
+    default:
+      break;
+  }
+
+  const expiryDays = diffInDaysFromNow(license.expiryDate);
+
+  if (expiryDays !== null) {
+    if (expiryDays <= 0) {
+      score += 90;
+    } else if (expiryDays <= 30) {
+      score += 65;
+    } else if (expiryDays <= 45) {
+      score += 50;
+    } else if (expiryDays <= 90) {
+      score += 30;
+    } else if (expiryDays <= 180) {
+      score += 10;
+    }
+  }
+
+  const nextContactDays = diffInDaysFromNow(license.nextContactDueAt);
+
+  if (nextContactDays !== null) {
+    if (nextContactDays < 0) {
+      score += 30;
+    } else if (nextContactDays <= 7) {
+      score += 15;
+    }
+  }
+
+  const idleDays = daysSinceNow(license.lastActivityAt);
+
+  if (idleDays === null) {
+    score += 18;
+  } else if (idleDays >= 60) {
+    score += 30;
+  } else if (idleDays >= 30) {
+    score += 18;
+  }
+
+  if (typeof license.contractValueMicros === 'number') {
+    const amount = license.contractValueMicros / 1_000_000;
+
+    if (amount >= 100_000_000) {
+      score += 20;
+    } else if (amount >= 50_000_000) {
+      score += 10;
+    }
+  }
+
+  if (license.autoRenewal) {
+    score -= 10;
+  }
+
+  return score;
+};
+
+const buildLicensePriorityReasons = (license: BasicLicenseRecord): string[] => {
+  const reasons: string[] = [];
+  const expiryDays = diffInDaysFromNow(license.expiryDate);
+  const nextContactDays = diffInDaysFromNow(license.nextContactDueAt);
+  const idleDays = daysSinceNow(license.lastActivityAt);
+
+  if (license.renewalRiskLevel === 'HIGH') {
+    reasons.push('갱신 리스크가 높음');
+  } else if (license.renewalRiskLevel === 'WATCH') {
+    reasons.push('갱신 리스크 주의 단계');
+  }
+
+  if (expiryDays !== null) {
+    if (expiryDays <= 0) {
+      reasons.push('이미 만료되었거나 만료 임박');
+    } else if (expiryDays <= 30) {
+      reasons.push(`${expiryDays}일 이내 만료`);
+    } else if (expiryDays <= 45) {
+      reasons.push(`${expiryDays}일 후 만료`);
+    } else if (expiryDays <= 90) {
+      reasons.push(`${expiryDays}일 후 만료 예정`);
+    }
+  }
+
+  if (nextContactDays !== null) {
+    if (nextContactDays < 0) {
+      reasons.push('다음 접점 예정일이 지났음');
+    } else if (nextContactDays <= 7) {
+      reasons.push('다음 접점 예정일이 7일 이내');
+    }
+  }
+
+  if (idleDays === null) {
+    reasons.push('최근 활동 이력이 없음');
+  } else if (idleDays >= 30) {
+    reasons.push(`최근 활동이 ${idleDays}일 전`);
+  }
+
+  if (typeof license.contractValueMicros === 'number') {
+    const amount = license.contractValueMicros / 1_000_000;
+
+    if (amount >= 50_000_000) {
+      reasons.push(`계약 규모 ${new Intl.NumberFormat('ko-KR').format(amount)} ${license.currencyCode ?? 'KRW'}`);
+    }
+  }
+
+  if (license.autoRenewal) {
+    reasons.push('자동 갱신 계약');
+  }
+
+  return reasons.slice(0, 4);
+};
+
 const sortNewestFirst = <T extends { createdAt?: string | null }>(items: T[]): T[] =>
   [...items].sort((left, right) =>
     (right.createdAt ?? '').localeCompare(left.createdAt ?? ''),
@@ -687,6 +1084,204 @@ const toPersonContext = (person: BasicPersonRecord) => ({
   city: person.city ?? '미입력',
   createdAt: person.createdAt ?? null,
 });
+
+const toLicenseContext = (license: BasicLicenseRecord) => ({
+  name: license.name,
+  endCustomerCompanyName: license.endCustomerCompanyName ?? '미지정',
+  vendorName: license.vendorName ?? license.vendorCompanyName ?? '미지정',
+  productName: license.productName ?? '미입력',
+  solutionName: license.solutionName ?? '미입력',
+  licenseType: formatLicenseType(license.licenseType),
+  renewalStage: formatLicenseStage(license.renewalStage),
+  renewalRiskLevel: formatLicenseRisk(license.renewalRiskLevel),
+  expiryDate: formatDateValue(license.expiryDate),
+  startDate: formatDateValue(license.startDate),
+  seatCount: license.seatCount ?? null,
+  contractValue: formatLicenseCurrency(license),
+  autoRenewal:
+    typeof license.autoRenewal === 'boolean'
+      ? license.autoRenewal
+        ? '예'
+        : '아니오'
+      : '미입력',
+  lastActivityAt: formatDateValue(license.lastActivityAt),
+  nextContactDueAt: formatDateValue(license.nextContactDueAt),
+  notesSummary: license.notesSummary ?? '미입력',
+  partnerCompanyName: license.partnerCompanyName ?? '미지정',
+  renewalOpportunityName: license.renewalOpportunityName ?? '미지정',
+  renewalOpportunityStage:
+    formatLicenseStage(license.renewalOpportunityStage),
+  priorityScore: buildLicensePriorityScore(license),
+  priorityReasons: buildLicensePriorityReasons(license),
+});
+
+const buildDetailedLicenseBody = (licenses: BasicLicenseRecord[]): string =>
+  licenses
+    .map((license, index) => {
+      const context = toLicenseContext(license);
+
+      return [
+        `${index + 1}. ${context.name}`,
+        `- 엔드고객: ${context.endCustomerCompanyName}`,
+        `- 제품/솔루션: ${context.productName} / ${context.solutionName}`,
+        `- 벤더: ${context.vendorName}`,
+        `- 유형: ${context.licenseType}`,
+        `- 갱신 단계: ${context.renewalStage}`,
+        `- 갱신 리스크: ${context.renewalRiskLevel}`,
+        `- 만료일: ${context.expiryDate}`,
+        `- 다음 접점 예정일: ${context.nextContactDueAt}`,
+        `- 최근 활동일: ${context.lastActivityAt}`,
+        `- 계약 금액: ${context.contractValue}`,
+        `- 수량: ${context.seatCount ?? '미입력'}`,
+        `- 자동 갱신: ${context.autoRenewal}`,
+        `- 연결 영업기회: ${context.renewalOpportunityName} / ${context.renewalOpportunityStage}`,
+        `- 우선순위 근거: ${context.priorityReasons.join(', ') || '근거 부족'}`,
+        `- 메모: ${truncate(context.notesSummary, 140)}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+
+const buildLicensePriorityOpinion = (licenses: BasicLicenseRecord[]): string => {
+  if (licenses.length === 0) {
+    return '조건에 맞는 라이선스가 없어 즉시 검토할 갱신 대상이 없습니다.';
+  }
+
+  const top = toLicenseContext(licenses[0]);
+
+  return `${top.endCustomerCompanyName}의 ${top.productName} 갱신을 최우선으로 보세요. ${top.priorityReasons.join(', ')} 기준으로 후속 접점을 먼저 잡는 것이 좋습니다.`;
+};
+
+const splitSlackBodyIntoChunks = (
+  body: string,
+  maxLength = 2800,
+): string[] => {
+  if (body.length <= maxLength) {
+    return [body];
+  }
+
+  const paragraphs = body.split('\n\n');
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const paragraph of paragraphs) {
+    const candidate = current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current);
+      current = '';
+    }
+
+    if (paragraph.length <= maxLength) {
+      current = paragraph;
+      continue;
+    }
+
+    const lines = paragraph.split('\n');
+    let lineChunk = '';
+
+    for (const line of lines) {
+      const lineCandidate =
+        lineChunk.length === 0 ? line : `${lineChunk}\n${line}`;
+
+      if (lineCandidate.length <= maxLength) {
+        lineChunk = lineCandidate;
+        continue;
+      }
+
+      if (lineChunk.length > 0) {
+        chunks.push(lineChunk);
+      }
+
+      lineChunk = line;
+    }
+
+    current = lineChunk;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+};
+
+const buildSectionBlocks = (title: string, body: string): Record<string, unknown>[] =>
+  splitSlackBodyIntoChunks(body).map((chunk, index) => ({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*${index === 0 ? title : `${title} (계속)`}*\n${chunk}`,
+    },
+  }));
+
+const matchesLicenseQuery = ({
+  license,
+  classification,
+  text,
+}: {
+  license: BasicLicenseRecord;
+  classification: SlackIntentClassification;
+  text: string;
+}): boolean => {
+  const targets = [
+    license.name,
+    license.endCustomerCompanyName,
+    license.vendorName,
+    license.vendorCompanyName,
+    license.partnerCompanyName,
+    license.productName,
+    license.solutionName,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => normalizeText(value));
+
+  const hints = [
+    ...classification.entityHints.companies,
+    ...classification.entityHints.solutions,
+  ]
+    .filter((value) => value.trim().length > 0)
+    .map((value) => normalizeText(value));
+  const normalizedText = normalizeText(text);
+
+  if (hints.length === 0) {
+    return true;
+  }
+
+  return hints.some((hint) =>
+    targets.some((target) => target.includes(hint) || normalizedText.includes(target)),
+  );
+};
+
+const selectLicensesByTimeframe = (
+  licenses: BasicLicenseRecord[],
+  timeframe: SlackIntentClassification['timeframe'],
+): BasicLicenseRecord[] => {
+  if (timeframe === 'THIS_MONTH') {
+    return licenses.filter(
+      (license) =>
+        license.expiryDate?.startsWith(THIS_MONTH_PREFIX) ||
+        license.nextContactDueAt?.startsWith(THIS_MONTH_PREFIX) ||
+        license.createdAt?.startsWith(THIS_MONTH_PREFIX),
+    );
+  }
+
+  if (timeframe === 'RECENT') {
+    return licenses
+      .slice()
+      .sort(
+        (left, right) =>
+          buildLicensePriorityScore(right) - buildLicensePriorityScore(left),
+      )
+      .slice(0, 10);
+  }
+
+  return licenses;
+};
 
 const buildOpportunityNextAction = (
   activity: OpportunityActivityBundle | undefined,
@@ -1266,6 +1861,163 @@ const buildRiskReply = async ({
   };
 };
 
+const buildLicensePriorityReply = async ({
+  classification,
+  text,
+}: {
+  classification: SlackIntentClassification;
+  text: string;
+}): Promise<{
+  reply: SlackReply;
+  resultJson: Record<string, unknown>;
+}> => {
+  const licenses = await fetchLicenses();
+  const scopedLicenses = selectLicensesByTimeframe(
+    licenses.filter((license) =>
+      matchesLicenseQuery({
+        license,
+        classification,
+        text,
+      }),
+    ),
+    classification.timeframe,
+  )
+    .slice()
+    .sort((left, right) => {
+      const scoreDiff =
+        buildLicensePriorityScore(right) - buildLicensePriorityScore(left);
+
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+
+      return (left.expiryDate ?? '9999-12-31').localeCompare(
+        right.expiryDate ?? '9999-12-31',
+      );
+    });
+
+  if (scopedLicenses.length === 0) {
+    return {
+      reply: {
+        text: '조건에 맞는 라이선스를 찾지 못했습니다. 고객사, 벤더, 제품명 또는 기간을 조금 더 구체적으로 알려주세요.',
+      },
+      resultJson: {
+        found: false,
+        count: 0,
+      },
+    };
+  }
+
+  const queryLabel =
+    classification.timeframe === 'THIS_MONTH'
+      ? '이번달 라이선스 우선순위 보고서'
+      : classification.timeframe === 'RECENT'
+        ? '최근 라이선스 우선순위 보고서'
+        : '라이선스 우선순위 보고서';
+  const contextLimit =
+    classification.detailLevel === 'DETAILED'
+      ? Math.min(scopedLicenses.length, 25)
+      : Math.min(scopedLicenses.length, 8);
+  const reportLicenses = scopedLicenses.slice(0, contextLimit);
+  const highRiskCount = scopedLicenses.filter(
+    (license) => license.renewalRiskLevel === 'HIGH',
+  ).length;
+  const expiringSoonCount = scopedLicenses.filter((license) => {
+    const expiryDays = diffInDaysFromNow(license.expiryDate);
+
+    return expiryDays !== null && expiryDays <= 45;
+  }).length;
+  const resultJson = {
+    queryCategory: classification.queryCategory,
+    detailLevel: classification.detailLevel,
+    timeframe: classification.timeframe,
+    count: scopedLicenses.length,
+    highRiskCount,
+    expiringSoonCount,
+    licenses: reportLicenses.map(toLicenseContext),
+    priorityBasis: [
+      'renewalRiskLevel',
+      'renewalStage',
+      'expiryDate',
+      'nextContactDueAt',
+      'lastActivityAt',
+      'contractValue',
+    ],
+  };
+  const detailBody = buildDetailedLicenseBody(reportLicenses);
+  const summaryBody =
+    `• 대상 라이선스: *${scopedLicenses.length}건*\n` +
+    `• 고위험 갱신: *${highRiskCount}건*\n` +
+    `• 45일 이내 만료/임박: *${expiringSoonCount}건*`;
+  const fallbackReply =
+    classification.detailLevel === 'DETAILED'
+      ? ({
+          text: `우선순위가 높은 라이선스 갱신 대상을 순서대로 정리했습니다. 대상 ${scopedLicenses.length}건입니다.`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*${queryLabel}*\n${summaryBody}`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text:
+                  '*우선순위 기준*\n' +
+                  '갱신 리스크, 만료일, 갱신 단계, 최근 활동 공백, 다음 접점 예정일, 계약 규모를 함께 반영했습니다.',
+              },
+            },
+            ...buildSectionBlocks('라이선스 상세', detailBody),
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*의견*\n${buildLicensePriorityOpinion(reportLicenses)}`,
+              },
+            },
+          ],
+        } satisfies SlackReply)
+      : ({
+          text: `우선순위가 높은 라이선스 갱신 대상을 정리했습니다. 대상 ${scopedLicenses.length}건입니다.`,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*${queryLabel}*\n${summaryBody}`,
+              },
+            },
+            ...buildSectionBlocks(
+              '상위 갱신 대상',
+              buildDetailedLicenseBody(reportLicenses.slice(0, 5)),
+            ),
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*의견*\n${buildLicensePriorityOpinion(reportLicenses)}`,
+              },
+            },
+          ],
+        } satisfies SlackReply);
+
+  return {
+    reply: await maybeSynthesizeReply({
+      requestText: text,
+      classification,
+      crmContext: {
+        queryLabel,
+        ...resultJson,
+      },
+      fallbackReply,
+    }),
+    resultJson,
+  };
+};
+
 const buildGeneralSummaryReply = async ({
   classification,
   text,
@@ -1355,6 +2107,93 @@ const buildGeneralSummaryReply = async ({
   };
 };
 
+type CrmQueryRoute =
+  | 'MONTHLY_NEW'
+  | 'OPPORTUNITY_STATUS'
+  | 'RISK_REVIEW'
+  | 'LICENSE_PRIORITY'
+  | 'METADATA_DYNAMIC'
+  | 'GENERAL';
+
+type CrmQueryRouteDecision = {
+  route: CrmQueryRoute;
+  legacyFallback: boolean;
+  fallbackRoute?: Exclude<CrmQueryRoute, 'METADATA_DYNAMIC'>;
+};
+
+type CrmQueryHandler = typeof buildMonthlyNewReply;
+
+const metadataAwareDynamicHandler = buildDynamicObjectQueryReply;
+
+const CRM_QUERY_HANDLER_REGISTRY: Partial<
+  Record<Exclude<CrmQueryRoute, 'METADATA_DYNAMIC'>, CrmQueryHandler>
+> = {
+  MONTHLY_NEW: buildMonthlyNewReply,
+  OPPORTUNITY_STATUS: buildOpportunityStatusReply,
+  RISK_REVIEW: buildRiskReply,
+  LICENSE_PRIORITY: buildLicensePriorityReply,
+  GENERAL: buildGeneralSummaryReply,
+};
+
+const resolveCrmQueryRoute = (
+  classification: SlackIntentClassification,
+): CrmQueryRouteDecision => {
+  if (
+    classification.queryCategory === 'LICENSE_PRIORITY' ||
+    classification.focusEntity === 'LICENSE'
+  ) {
+    return {
+      route: 'METADATA_DYNAMIC',
+      legacyFallback: false,
+      fallbackRoute: 'LICENSE_PRIORITY',
+    };
+  }
+
+  if (classification.queryCategory === 'MONTHLY_NEW') {
+    return {
+      route: 'MONTHLY_NEW',
+      legacyFallback: false,
+    };
+  }
+
+  if (classification.queryCategory === 'OPPORTUNITY_STATUS') {
+    return {
+      route: 'OPPORTUNITY_STATUS',
+      legacyFallback: false,
+    };
+  }
+
+  if (classification.queryCategory === 'RISK_REVIEW') {
+    return {
+      route: 'RISK_REVIEW',
+      legacyFallback: false,
+    };
+  }
+
+  if (
+    classification.queryCategory === 'PIPELINE_SUMMARY' ||
+    classification.queryCategory === 'RECORD_LOOKUP'
+  ) {
+    return {
+      route: 'METADATA_DYNAMIC',
+      legacyFallback: false,
+    };
+  }
+
+  // Legacy compatibility: keep the old opportunity-hint shortcut until planner coverage is fully reliable.
+  if (classification.entityHints.opportunities.length > 0) {
+    return {
+      route: 'OPPORTUNITY_STATUS',
+      legacyFallback: true,
+    };
+  }
+
+  return {
+    route: 'GENERAL',
+    legacyFallback: false,
+  };
+};
+
 export const answerCrmQuery = async ({
   classification,
   text,
@@ -1365,19 +2204,37 @@ export const answerCrmQuery = async ({
   reply: SlackReply;
   resultJson: Record<string, unknown>;
 }> => {
-  if (classification.queryCategory === 'MONTHLY_NEW') {
-    return buildMonthlyNewReply({ classification, text });
+  const route = resolveCrmQueryRoute(classification);
+  const handler = CRM_QUERY_HANDLER_REGISTRY[route.route];
+
+  if (route.route === 'METADATA_DYNAMIC') {
+    if (metadataAwareDynamicHandler) {
+      const dynamicResult = await metadataAwareDynamicHandler({
+        classification,
+        text,
+      });
+
+      if (dynamicResult.handled) {
+        return {
+          reply: dynamicResult.reply,
+          resultJson: dynamicResult.resultJson,
+        };
+      }
+    }
+
+    if (route.fallbackRoute) {
+      const fallbackHandler = CRM_QUERY_HANDLER_REGISTRY[route.fallbackRoute];
+
+      if (fallbackHandler) {
+        return fallbackHandler({ classification, text });
+      }
+    }
+
+    return buildGeneralSummaryReply({ classification, text });
   }
 
-  if (
-    classification.queryCategory === 'OPPORTUNITY_STATUS' ||
-    classification.entityHints.opportunities.length > 0
-  ) {
-    return buildOpportunityStatusReply({ classification, text });
-  }
-
-  if (classification.queryCategory === 'RISK_REVIEW') {
-    return buildRiskReply({ classification, text });
+  if (handler) {
+    return handler({ classification, text });
   }
 
   return buildGeneralSummaryReply({ classification, text });

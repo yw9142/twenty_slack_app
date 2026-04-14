@@ -65,6 +65,7 @@ Choose UNKNOWN only when the message is too ambiguous to safely classify.
 Infer intentType, queryCategory, detailLevel, timeframe, focusEntity, and entityHints from the Slack message itself.
 If the user asks for every item, says not to summarize, asks for one-by-one detail, or explicitly asks for 상세/전부/하나하나, set detailLevel to DETAILED.
 Use timeframe THIS_MONTH for 이번달/금월/this month, RECENT for 최근/latest/recent, otherwise ALL_TIME.
+Use focusEntity LICENSE when the request is about licenses, renewals, expiry, seats, contract value, renewal stage, renewal risk, or renewal priority.
 Use focusEntity OPPORTUNITY when the request is about deals, opportunities, pipeline, sales chances, progress, stage, risk, amount, or close timing.
 Use focusEntity PERSON or COMPANY when the primary ask is about a contact or customer rather than an opportunity.
 Extract entityHints using exact names from the message when available. Do not paraphrase, translate, or invent company, person, opportunity, or solution names.
@@ -102,8 +103,68 @@ export const buildQueryPlannerUserPrompt = (cleanedText: string): string =>
     '<message>오늘 미팅 내용 CRM에 반영할 수 있게 초안 잡아줘</message>',
     '<expected>WRITE_DRAFT / GENERAL / SUMMARY / ALL_TIME / GENERAL</expected>',
     '</example>',
+    '<example>',
+    '<message>전체 라이선스 데이터 조회해서 우선순위 높은 건 순으로 상세 보고서 작성해줘</message>',
+    '<expected>QUERY / LICENSE_PRIORITY / DETAILED / ALL_TIME / LICENSE</expected>',
+    '</example>',
     '</examples>',
     `<message>${cleanedText}</message>`,
+  ].join('\n');
+
+export const buildObjectQueryPlannerSystemPrompt = (): string =>
+  joinSections([
+    {
+      title: 'Base Instructions',
+      content: `
+You choose which Twenty CRM object should be queried for a Slack request.
+Use the provided object catalog only. Do not invent objects that are not listed.
+Choose the object whose business meaning best matches the user's request.
+`,
+    },
+    {
+      title: 'Selection Strategy',
+      content: `
+Match the user request against object labels, plural labels, singular names, descriptions, and common business meaning.
+Prefer the most specific business object over broad generic objects.
+If the request is about renewals, expiry, license quantity, or contract renewals, prefer a license-like object over company or opportunity.
+If the request clearly names an object or uses its label in Korean, respect that.
+Only return handled=false when no catalog object is a safe fit.
+`,
+    },
+    {
+      title: 'Output Rules',
+      content: `
+Return a concise Korean summary.
+Choose reportMode PRIORITY_REPORT when the user asks for 우선순위, 리스크 순, 급한 순, 만료 임박 순, or similar urgency ranking.
+Choose reportMode STATUS_REPORT when the user asks for current state or stage of a specific record set.
+Choose reportMode SUMMARY_REPORT for broad overviews or counts.
+Choose reportMode LIST_REPORT for exhaustive lists without an obvious priority rule.
+`,
+    },
+  ]);
+
+export const buildObjectQueryPlannerUserPrompt = ({
+  cleanedText,
+  objectCatalog,
+}: {
+  cleanedText: string;
+  objectCatalog: Array<{
+    id: string;
+    nameSingular: string;
+    namePlural: string;
+    labelSingular: string;
+    labelPlural: string;
+    description?: string | null;
+  }>;
+}): string =>
+  [
+    '<instructions>',
+    'Read the Slack request and choose the best matching CRM object from the catalog.',
+    'If the request explicitly asks for 우선순위/리스크/급한 순/만료 임박, prefer PRIORITY_REPORT.',
+    'If there is no safe object match, return handled=false.',
+    '</instructions>',
+    `<object_catalog>${JSON.stringify(compactJsonLike(objectCatalog) ?? objectCatalog)}</object_catalog>`,
+    `<request>${cleanedText}</request>`,
   ].join('\n');
 
 export const buildQuerySynthesisSystemPrompt = (): string =>
@@ -134,7 +195,9 @@ Then identify the exact records that answer the question and ignore unrelated re
 If detailLevel is DETAILED, enumerate each relevant record one by one instead of collapsing everything into counts only.
 If detailLevel is SUMMARY, give the core answer first and include only the most relevant supporting records.
 When multiple opportunities are relevant, prioritize freshness, risk, stage movement, amount, and explicitly requested entities.
+When the request is about licenses or renewals, prioritize renewal risk, expiry urgency, renewal stage, last activity freshness, next contact due date, and contract value.
 For opportunity-oriented answers, include company, opportunity, stage, contact, amount, close date, and recent activity when those values exist.
+For license-oriented answers, include end customer, product, vendor, renewal stage, renewal risk, expiry date, next contact due date, last activity, auto-renewal, contract value, and note summary when those values exist.
 For DETAILED requests, aim to be exhaustive within the provided context: include all relevant records, not just a representative sample.
 Do not arbitrarily truncate to top 3 or top 5 unless the user explicitly asked for only a subset.
 If the matching set is genuinely large, state the total count first, then list records in a stable order with enough identifying detail for each one.
@@ -189,12 +252,13 @@ export const buildQuerySynthesisUserPrompt = ({
     '<instructions>',
     'Read the request and CRM context carefully.',
     'Use exact values from the CRM context.',
-    'For detailed requests, create a section that lists each relevant opportunity separately.',
-    'Do not omit relevant opportunity, company, contact, amount, stage, or date fields that already exist in the context.',
+    'For detailed requests, create a section that lists each relevant record separately.',
+    'Do not omit relevant opportunity, company, contact, amount, stage, date, or license renewal fields that already exist in the context.',
     'text must answer the user first in one sentence.',
     'The final section title should be 의견.',
     'If there are no matching records, say so explicitly and explain the basis briefly.',
     'If detailLevel is DETAILED, be exhaustive and list all relevant records you can ground.',
+    'If focusEntity is LICENSE or queryCategory is LICENSE_PRIORITY, rank licenses by urgency and explain the priority basis using CRM fields only.',
     'If you use web search, keep those facts separate from CRM facts and add an 외부 참고 section before 의견.',
     '</instructions>',
     '<examples>',
@@ -205,6 +269,10 @@ export const buildQuerySynthesisUserPrompt = ({
     '<example>',
     '<request>전체 신규영업기회 정리해서 알려줘. 요약하지말고 하나하나 상세하게 알려줘</request>',
     '<response_shape>{"text":"이번달 신규 영업기회를 상세 정리했습니다.","sections":[{"title":"신규 영업기회 상세","body":"1. ...\\n2. ..."},{"title":"의견","body":"..."}]}</response_shape>',
+    '</example>',
+    '<example>',
+    '<request>전체 라이선스 데이터 조회해서 우선순위 높은 건 순으로 상세하게 정리해줘</request>',
+    '<response_shape>{"text":"우선순위가 높은 라이선스 갱신 대상을 순서대로 정리했습니다.","sections":[{"title":"우선순위 기준","body":"갱신 리스크, 만료일, 최근 활동, 다음 접점 예정일, 계약 규모를 기준으로 정렬했습니다."},{"title":"라이선스 상세","body":"1. ...\\n2. ..."},{"title":"의견","body":"..."}]}</response_shape>',
     '</example>',
     '</examples>',
     `<request>${cleanedText}</request>`,

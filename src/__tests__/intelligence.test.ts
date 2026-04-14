@@ -82,6 +82,10 @@ describe('intelligence fallbacks', () => {
 
     expect(body).toMatchObject({
       model: 'claude-test-model',
+      cache_control: {
+        type: 'ephemeral',
+        ttl: '5m',
+      },
       output_config: {
         effort: 'high',
       },
@@ -290,6 +294,10 @@ describe('intelligence fallbacks', () => {
         : null;
 
     expect(body?.output_config?.format?.type).toBe('json_schema');
+    expect(body?.cache_control).toMatchObject({
+      type: 'ephemeral',
+      ttl: '5m',
+    });
     expect(body?.output_config?.effort).toBe('high');
     expect(body?.thinking).toMatchObject({
       type: 'adaptive',
