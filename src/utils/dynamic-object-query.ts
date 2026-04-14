@@ -19,8 +19,23 @@ import {
   normalizeText,
   uniqueNonEmpty,
 } from 'src/utils/strings';
+import {
+  createWorkspaceQueryClient,
+  isWorkspaceGraphqlQueryConfigured,
+} from 'src/utils/workspace-graphql-client';
 
 type GraphQlSelection = Record<string, unknown>;
+
+type GraphQlTypeReference = {
+  kind?: string | null;
+  name?: string | null;
+  ofType?: GraphQlTypeReference | null;
+};
+
+type CoreQueryRootFieldInfo = {
+  name: string;
+  baseTypeName: string | null;
+};
 
 type RankedObjectDefinition = {
   definition: ObjectDefinition;
@@ -51,6 +66,35 @@ const NESTED_FIELD_LIMIT = 4;
 const SUMMARY_RECORD_LIMIT = 8;
 const DETAIL_RECORD_LIMIT = 20;
 const MAX_RELATION_SELECTION_DEPTH = 1;
+const GRAPHQL_ROOT_FIELD_INTROSPECTION_SELECTION = {
+  __schema: {
+    queryType: {
+      fields: {
+        name: true,
+        type: {
+          kind: true,
+          name: true,
+          ofType: {
+            kind: true,
+            name: true,
+            ofType: {
+              kind: true,
+              name: true,
+              ofType: {
+                kind: true,
+                name: true,
+                ofType: {
+                  kind: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
 
 const SIMPLE_FIELD_TYPES = new Set<ObjectFieldMetadata['type']>([
   'ARRAY',
@@ -182,6 +226,8 @@ const splitSlackBodyIntoChunks = (
   return chunks;
 };
 
+let coreQueryRootFieldsPromise: Promise<CoreQueryRootFieldInfo[]> | null = null;
+
 const buildSectionBlocks = (title: string, body: string): Record<string, unknown>[] =>
   splitSlackBodyIntoChunks(body).map((chunk, index) => ({
     type: 'section',
@@ -193,6 +239,238 @@ const buildSectionBlocks = (title: string, body: string): Record<string, unknown
 
 const toRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+
+const normalizeGraphqlIdentifier = (value: string): string =>
+  normalizeText(value).replace(/[^a-z0-9]+/gi, '');
+
+const toGraphqlFieldName = (value: string): string => {
+  const tokens = value
+    .trim()
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+
+  if (tokens.length === 0) {
+    return '';
+  }
+
+  const [firstToken, ...restTokens] = tokens;
+
+  return [
+    firstToken.charAt(0).toLowerCase() + firstToken.slice(1),
+    ...restTokens.map(
+      (token) => token.charAt(0).toUpperCase() + token.slice(1),
+    ),
+  ].join('');
+};
+
+const unwrapGraphqlTypeName = (
+  value: GraphQlTypeReference | null | undefined,
+): string | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  if (typeof value.name === 'string' && value.name.trim().length > 0) {
+    return value.name.trim();
+  }
+
+  return unwrapGraphqlTypeName(value.ofType ?? null);
+};
+
+const buildQueryRootCandidates = (definition: ObjectDefinition): string[] =>
+  uniqueNonEmpty([
+    definition.namePlural,
+    definition.nameSingular,
+    definition.labelPlural,
+    definition.labelSingular,
+    toGraphqlFieldName(definition.namePlural),
+    toGraphqlFieldName(definition.nameSingular),
+    toGraphqlFieldName(definition.labelPlural),
+    toGraphqlFieldName(definition.labelSingular),
+  ])
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => candidate.length > 0);
+
+const getCoreQueryRootFieldInfos = async (): Promise<CoreQueryRootFieldInfo[]> => {
+  if (!coreQueryRootFieldsPromise) {
+    coreQueryRootFieldsPromise = (async () => {
+      const client = isWorkspaceGraphqlQueryConfigured()
+        ? createWorkspaceQueryClient()
+        : createCoreClient();
+
+      try {
+        const response = await client.query<{
+          __schema?: {
+            queryType?: {
+              fields?: Array<{
+                name?: string | null;
+                type?: GraphQlTypeReference | null;
+              }>;
+            } | null;
+          };
+        }>(GRAPHQL_ROOT_FIELD_INTROSPECTION_SELECTION);
+
+        return (
+          response.__schema?.queryType?.fields ?? []
+        )
+          .map((field) => {
+            const name = typeof field.name === 'string' ? field.name.trim() : '';
+
+            return name.length > 0
+              ? {
+                  name,
+                  baseTypeName: unwrapGraphqlTypeName(field.type),
+                }
+              : null;
+          })
+          .filter(
+            (item): item is CoreQueryRootFieldInfo => item !== null,
+          );
+      } catch {
+        return [];
+      }
+    })();
+  }
+
+  return coreQueryRootFieldsPromise;
+};
+
+const pickBestQueryRootField = async (
+  definition: ObjectDefinition,
+): Promise<string> => {
+  const candidates = buildQueryRootCandidates(definition);
+  const candidateIdentifiers = candidates.map((candidate) =>
+    normalizeGraphqlIdentifier(candidate),
+  );
+
+  const availableQueryRootFields = await getCoreQueryRootFieldInfos();
+
+  const scoredCandidates = availableQueryRootFields
+    .map((field) => {
+      const normalizedFieldName = normalizeGraphqlIdentifier(field.name);
+      const normalizedBaseTypeName = normalizeGraphqlIdentifier(
+        field.baseTypeName ?? '',
+      );
+
+      let score = 0;
+
+      for (const candidate of candidateIdentifiers) {
+        if (!candidate) {
+          continue;
+        }
+
+        if (
+          normalizedFieldName === candidate ||
+          normalizedBaseTypeName === candidate
+        ) {
+          score = Math.max(score, 100);
+          continue;
+        }
+
+        if (
+          normalizedFieldName.includes(candidate) ||
+          candidate.includes(normalizedFieldName)
+        ) {
+          score = Math.max(score, 80);
+        }
+
+        if (
+          normalizedBaseTypeName.includes(candidate) ||
+          candidate.includes(normalizedBaseTypeName)
+        ) {
+          score = Math.max(score, 70);
+        }
+      }
+
+      return {
+        field,
+        score,
+      };
+    })
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.field.name.localeCompare(right.field.name, 'ko-KR');
+    });
+
+  if (scoredCandidates.length > 0) {
+    return scoredCandidates[0].field.name;
+  }
+
+  const firstExactCandidate = availableQueryRootFields.find((field) =>
+    candidateIdentifiers.includes(normalizeGraphqlIdentifier(field.name)),
+  );
+
+  if (firstExactCandidate) {
+    return firstExactCandidate.name;
+  }
+
+  return candidates[0] ?? definition.namePlural;
+};
+
+const buildObjectQuerySelection = (
+  rootFieldName: string,
+  selection: GraphQlSelection,
+  first: number,
+): GraphQlSelection => ({
+  [rootFieldName]: {
+    __args: {
+      first,
+    },
+    edges: {
+      node: selection,
+    },
+  },
+});
+
+const queryObjectConnection = async (
+  definition: ObjectDefinition,
+  selection: GraphQlSelection,
+  first: number,
+): Promise<{
+  rootFieldName: string;
+  connection: { edges?: Array<{ node?: Record<string, unknown> }> } | undefined;
+}> => {
+  const queryRootFieldName = await pickBestQueryRootField(definition);
+  const candidateRootFieldNames = uniqueNonEmpty([
+    queryRootFieldName,
+    ...buildQueryRootCandidates(definition),
+  ]);
+
+  const client = isWorkspaceGraphqlQueryConfigured()
+    ? createWorkspaceQueryClient()
+    : createCoreClient();
+  let lastError: unknown = null;
+
+  for (const rootFieldName of candidateRootFieldNames) {
+    try {
+      const response = await client.query<Record<string, unknown>>(
+        buildObjectQuerySelection(rootFieldName, selection, first),
+      );
+      const connection = response[rootFieldName] as
+        | { edges?: Array<{ node?: Record<string, unknown> }> }
+        | undefined;
+
+      return {
+        rootFieldName,
+        connection,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(
+        `Failed to query ${definition.labelPlural} using candidate roots: ${candidateRootFieldNames.join(', ')}`,
+      );
+};
 
 const toString = (value: unknown): string | null =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -1261,27 +1539,14 @@ const buildDynamicQueryReply = async ({
 
   const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
   const selection = buildFieldSelectionForDefinition(selectedDefinition, definitionsById);
-  const client = createCoreClient();
-  const response = await client.query<Record<string, unknown>>({
-    [selectedDefinition.namePlural]: {
-      __args: {
-        paging: {
-          first:
-            classification.detailLevel === 'DETAILED' ||
-            plan?.reportMode === 'PRIORITY_REPORT'
-              ? DETAIL_RECORD_LIMIT
-              : SUMMARY_RECORD_LIMIT,
-        },
-      },
-      edges: {
-        node: selection,
-      },
-    },
-  });
-
-  const connection = response[selectedDefinition.namePlural] as
-    | { edges?: Array<{ node?: Record<string, unknown> }> }
-    | undefined;
+  const { rootFieldName, connection } = await queryObjectConnection(
+    selectedDefinition,
+    selection,
+    classification.detailLevel === 'DETAILED' ||
+      plan?.reportMode === 'PRIORITY_REPORT'
+      ? DETAIL_RECORD_LIMIT
+      : SUMMARY_RECORD_LIMIT,
+  );
   const rawRecords = (connection?.edges ?? [])
     .map((edge) => edge.node)
     .filter((node): node is Record<string, unknown> => Boolean(node));
@@ -1295,6 +1560,7 @@ const buildDynamicQueryReply = async ({
       resultJson: {
         handled: true,
         selectedObject: toCatalogItem(selectedDefinition),
+        selectedRootField: rootFieldName,
         plan,
         count: 0,
         fieldCount: selectedDefinition.fields.length,
@@ -1360,6 +1626,7 @@ const buildDynamicQueryReply = async ({
     resultJson: {
       handled: true,
       selectedObject: toCatalogItem(selectedDefinition),
+      selectedRootField: rootFieldName,
       plan,
       count: rawRecords.length,
       fieldCount: selectedDefinition.fields.length,

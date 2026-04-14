@@ -232,10 +232,10 @@ const runOrThrow = (command, args, options = {}) => {
 const getYarnCommand = () => (process.platform === 'win32' ? 'yarn.cmd' : 'yarn');
 
 const createFixedTarball = async () => {
-  runOrThrow(getYarnCommand(), ['twenty', 'build', '--tarball']);
+  runOrThrow(getYarnCommand(), ['twenty', 'build']);
 
   const manifestPath = path.join(OUTPUT_DIR, 'manifest.json');
-  const packageJsonPath = path.join(OUTPUT_DIR, 'package.json');
+  const packageJsonPath = path.join(process.cwd(), 'package.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const outputPackageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'));
   const normalizedManifest = normalizeManifestPaths(manifest);
@@ -253,6 +253,10 @@ const createFixedTarball = async () => {
   await writeFile(
     path.join(packageDir, 'manifest.json'),
     JSON.stringify(normalizedManifest, null, 2),
+  );
+  await writeFile(
+    path.join(packageDir, 'package.json'),
+    JSON.stringify(outputPackageJson, null, 2),
   );
 
   try {

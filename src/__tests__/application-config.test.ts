@@ -10,6 +10,7 @@ const runtimeVariableKeys = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_MODEL',
   'TWENTY_BASE_URL',
+  'TWENTY_WORKSPACE_API_KEY',
 ] as const;
 
 describe('application config', () => {

@@ -384,51 +384,82 @@ describe('dynamic object query reply', () => {
       targetObjectLabelPlural: '라이선스',
     });
 
-    coreQuery.mockResolvedValue({
-      licenses: {
-        edges: [
-          {
-            node: {
-              id: 'license-1',
-              createdAt: '2026-04-14T00:00:00.000Z',
-              updatedAt: '2026-04-14T00:00:00.000Z',
-              name: '서울메디컬센터 Nubo VMI Subscription 2026',
-              productName: 'Nubo VMI',
-              renewalRiskLevel: 'HIGH',
-              expiryDate: '2026-05-13',
-              lastActivityAt: '2026-04-01T00:00:00.000Z',
-              vendorCompany: {
-                id: 'company-1',
-                name: '서울메디컬센터',
-              },
-              contractValue: {
-                amountMicros: 72_000_000_000_000,
-                currencyCode: 'KRW',
-              },
+    coreQuery.mockImplementation(async (query: Record<string, unknown>) => {
+      if (Object.prototype.hasOwnProperty.call(query, '__schema')) {
+        return {
+          __schema: {
+            queryType: {
+              fields: [
+                {
+                  name: 'licenseRecords',
+                  type: {
+                    kind: 'OBJECT',
+                    name: 'LicenseRecordConnection',
+                  },
+                },
+                {
+                  name: 'companies',
+                  type: {
+                    kind: 'OBJECT',
+                    name: 'CompanyConnection',
+                  },
+                },
+              ],
             },
           },
-          {
-            node: {
-              id: 'license-2',
-              createdAt: '2026-04-14T00:00:00.000Z',
-              updatedAt: '2026-04-14T00:00:00.000Z',
-              name: '미래금융그룹 Citrix VDI Annual Renewal 2026',
-              productName: 'Citrix VDI',
-              renewalRiskLevel: 'WATCH',
-              expiryDate: '2026-07-12',
-              lastActivityAt: '2026-04-05T00:00:00.000Z',
-              vendorCompany: {
-                id: 'company-2',
-                name: '미래금융그룹',
+        };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(query, 'licenseRecords')) {
+        return {
+          licenseRecords: {
+            edges: [
+              {
+                node: {
+                  id: 'license-1',
+                  createdAt: '2026-04-14T00:00:00.000Z',
+                  updatedAt: '2026-04-14T00:00:00.000Z',
+                  name: '서울메디컬센터 Nubo VMI Subscription 2026',
+                  productName: 'Nubo VMI',
+                  renewalRiskLevel: 'HIGH',
+                  expiryDate: '2026-05-13',
+                  lastActivityAt: '2026-04-01T00:00:00.000Z',
+                  vendorCompany: {
+                    id: 'company-1',
+                    name: '서울메디컬센터',
+                  },
+                  contractValue: {
+                    amountMicros: 72_000_000_000_000,
+                    currencyCode: 'KRW',
+                  },
+                },
               },
-              contractValue: {
-                amountMicros: 180_000_000_000_000,
-                currencyCode: 'KRW',
+              {
+                node: {
+                  id: 'license-2',
+                  createdAt: '2026-04-14T00:00:00.000Z',
+                  updatedAt: '2026-04-14T00:00:00.000Z',
+                  name: '미래금융그룹 Citrix VDI Annual Renewal 2026',
+                  productName: 'Citrix VDI',
+                  renewalRiskLevel: 'WATCH',
+                  expiryDate: '2026-07-12',
+                  lastActivityAt: '2026-04-05T00:00:00.000Z',
+                  vendorCompany: {
+                    id: 'company-2',
+                    name: '미래금융그룹',
+                  },
+                  contractValue: {
+                    amountMicros: 180_000_000_000_000,
+                    currencyCode: 'KRW',
+                  },
+                },
               },
-            },
+            ],
           },
-        ],
-      },
+        };
+      }
+
+      throw new Error('Unexpected query root field');
     });
 
     const { findRelevantObjectCatalog, buildDynamicObjectQueryReply } =
@@ -474,6 +505,7 @@ describe('dynamic object query reply', () => {
         id: 'license-object',
         nameSingular: 'license',
       },
+      selectedRootField: 'licenseRecords',
     });
     expect(result.resultJson.records).toHaveLength(2);
     expect(
@@ -482,11 +514,9 @@ describe('dynamic object query reply', () => {
     ).toBe('HIGH');
     expect(coreQuery).toHaveBeenCalledWith(
       expect.objectContaining({
-        licenses: expect.objectContaining({
+        licenseRecords: expect.objectContaining({
           __args: expect.objectContaining({
-            paging: expect.objectContaining({
-              first: 20,
-            }),
+            first: 20,
           }),
           edges: expect.objectContaining({
             node: expect.objectContaining({
@@ -507,12 +537,10 @@ describe('dynamic object query reply', () => {
         }),
       }),
     );
-    const queryNode =
-      coreQuery.mock.calls[0]?.[0]?.licenses?.edges?.node?.vendorCompany as
-        | Record<string, unknown>
-        | undefined;
-    expect(queryNode).toBeDefined();
-    expect(queryNode).not.toHaveProperty('licenses');
+    expect(
+      coreQuery.mock.calls[1]?.[0]?.licenseRecords?.edges?.node?.vendorCompany,
+    ).toMatchObject({ id: true, name: true });
+    expect(coreQuery.mock.calls[1]?.[0]).not.toHaveProperty('licenses');
   });
 
   it('returns handled false when the text does not point at a queryable object', async () => {

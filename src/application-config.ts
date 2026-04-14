@@ -132,6 +132,13 @@ export default defineApplication({
       value: '',
       isSecret: false,
     },
+    TWENTY_WORKSPACE_API_KEY: {
+      universalIdentifier: 'a1d4bd77-c70b-45c7-a8c0-fdbf5a8c4fe1',
+      description:
+        'Workspace API key used for cross-application CRM reads when the app-scoped GraphQL schema does not expose a target object.',
+      value: '',
+      isSecret: true,
+    },
   },
   defaultRoleUniversalIdentifier: DEFAULT_ROLE_UNIVERSAL_IDENTIFIER,
 });

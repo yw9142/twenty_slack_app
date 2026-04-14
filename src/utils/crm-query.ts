@@ -12,6 +12,10 @@ import { createCoreClient } from 'src/utils/core-client';
 import { buildDynamicObjectQueryReply } from 'src/utils/dynamic-object-query';
 import { synthesizeCrmQueryReply } from 'src/utils/intelligence';
 import { normalizeText, truncate } from 'src/utils/strings';
+import {
+  createWorkspaceQueryClient,
+  isWorkspaceGraphqlQueryConfigured,
+} from 'src/utils/workspace-graphql-client';
 
 const THIS_MONTH_PREFIX = new Date().toISOString().slice(0, 7);
 
@@ -290,7 +294,9 @@ const queryWithFallback = async <
   richSelection: RichOrBasicSelection;
   fallbackSelection: RichOrBasicSelection;
 }): Promise<TRecord[]> => {
-  const client = createCoreClient();
+  const client = isWorkspaceGraphqlQueryConfigured()
+    ? createWorkspaceQueryClient()
+    : createCoreClient();
   const buildSelection = (selection: RichOrBasicSelection) => ({
     [root]: {
       __args: buildConnectionArgs({
