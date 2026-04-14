@@ -1,5 +1,4 @@
 import { MetadataApiClient } from 'twenty-client-sdk/metadata';
-import type { FieldMetadataType } from 'twenty-client-sdk/metadata';
 
 import { normalizeText, uniqueNonEmpty } from 'src/utils/strings';
 
@@ -62,7 +61,7 @@ export type ObjectCatalogItem = {
 export type ObjectFieldMetadata = {
   id: string;
   universalIdentifier: string;
-  type: FieldMetadataType;
+  type: string;
   name: string;
   label: string;
   description: string | null;
@@ -251,7 +250,7 @@ const toFieldMetadata = (value: unknown): ObjectFieldMetadata | null => {
 
   const id = toStringOrNull(record.id);
   const universalIdentifier = toStringOrNull(record.universalIdentifier);
-  const type = toStringOrNull(record.type) as FieldMetadataType | null;
+  const type = toStringOrNull(record.type);
   const name = toStringOrNull(record.name);
   const label = toStringOrNull(record.label);
   const createdAt = toStringOrNull(record.createdAt);
@@ -395,7 +394,7 @@ const loadAllObjectDefinitions = async (): Promise<ObjectDefinition[]> => {
   let after: string | null = null;
 
   do {
-    const response = await client.query<MetadataQueryPage>({
+    const response: any = await client.query<any>({
       objects: {
         __args: {
           paging: after ? { first: 1000, after } : { first: 1000 },
@@ -427,7 +426,7 @@ const loadAllObjectDefinitions = async (): Promise<ObjectDefinition[]> => {
       definitions.push(definition);
     }
 
-    const pageInfo = response.objects?.pageInfo ?? null;
+    const pageInfo: any = response.objects?.pageInfo ?? null;
     after =
       pageInfo?.hasNextPage && typeof pageInfo.endCursor === 'string'
         ? pageInfo.endCursor

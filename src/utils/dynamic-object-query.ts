@@ -622,8 +622,8 @@ const extractReadableValue = (value: unknown): string | number | boolean | null 
   }
 
   const fullName = uniqueNonEmpty([
-    toString(record.firstName),
-    toString(record.lastName),
+    toString(record.firstName) ?? '',
+    toString(record.lastName) ?? '',
   ]).join(' ');
   if (fullName.length > 0) {
     return fullName;
