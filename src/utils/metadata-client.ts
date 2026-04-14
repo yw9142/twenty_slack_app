@@ -179,6 +179,23 @@ const OBJECT_METADATA_SELECTION = {
   },
 } as const;
 
+const MAX_METADATA_OBJECT_PAGES = 25;
+const METADATA_QUERY_TIMEOUT_MS = 8_000;
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> =>
+  await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }),
+  ]);
+
 const toStringOrNull = (value: unknown): string | null =>
   typeof value === 'string' && value.trim().length > 0 ? value : null;
 
@@ -392,27 +409,48 @@ const loadAllObjectDefinitions = async (): Promise<ObjectDefinition[]> => {
   const client = new MetadataApiClient();
   const definitions: ObjectDefinition[] = [];
   let after: string | null = null;
+  const seenCursors = new Set<string>();
+  let pageCount = 0;
 
   do {
-    const response: any = await client.query<any>({
-      objects: {
-        __args: {
-          paging: after ? { first: 1000, after } : { first: 1000 },
-          filter: {
-            isActive: {
-              is: true,
+    if (pageCount >= MAX_METADATA_OBJECT_PAGES) {
+      throw new Error(
+        `Metadata object pagination exceeded ${MAX_METADATA_OBJECT_PAGES} pages`,
+      );
+    }
+
+    if (after) {
+      if (seenCursors.has(after)) {
+        throw new Error(`Metadata object pagination repeated cursor: ${after}`);
+      }
+
+      seenCursors.add(after);
+    }
+
+    pageCount += 1;
+    const response: any = await withTimeout(
+      client.query<any>({
+        objects: {
+          __args: {
+            paging: after ? { first: 1000, after } : { first: 1000 },
+            filter: {
+              isActive: {
+                is: true,
+              },
             },
           },
+          edges: {
+            node: OBJECT_METADATA_SELECTION,
+          },
+          pageInfo: {
+            hasNextPage: true,
+            endCursor: true,
+          },
         },
-        edges: {
-          node: OBJECT_METADATA_SELECTION,
-        },
-        pageInfo: {
-          hasNextPage: true,
-          endCursor: true,
-        },
-      },
-    });
+      }),
+      METADATA_QUERY_TIMEOUT_MS,
+      'Metadata objects query',
+    );
 
     const pageObjects = response.objects?.edges ?? [];
 

@@ -62,6 +62,18 @@ type DynamicObjectQueryResult = {
   resultJson: Record<string, unknown>;
 };
 
+export type DynamicObjectQueryProgressStage =
+  | 'DYNAMIC_METADATA_LOADING'
+  | 'DYNAMIC_METADATA_READY'
+  | 'DYNAMIC_OBJECT_PLANNING'
+  | 'DYNAMIC_OBJECT_PLANNED'
+  | 'DYNAMIC_RECORD_QUERYING'
+  | 'DYNAMIC_RECORDS_READY'
+  | 'DYNAMIC_REPORT_BUILT'
+  | 'DYNAMIC_SYNTHESIS_STARTED'
+  | 'DYNAMIC_SYNTHESIS_SKIPPED'
+  | 'DYNAMIC_SYNTHESIS_COMPLETED';
+
 const MIN_OBJECT_SCORE = 8;
 const MAX_PLANNER_CANDIDATES = 12;
 const ROOT_FIELD_LIMIT = 12;
@@ -69,6 +81,17 @@ const NESTED_FIELD_LIMIT = 4;
 const SUMMARY_RECORD_LIMIT = 8;
 const DETAIL_RECORD_LIMIT = 20;
 const MAX_RELATION_SELECTION_DEPTH = 1;
+const GRAPHQL_QUERY_TIMEOUT_MS = 10_000;
+const HIDDEN_DYNAMIC_FIELD_NAMES = new Set([
+  'id',
+  'createdAt',
+  'updatedAt',
+  'deletedAt',
+  'createdBy',
+  'updatedBy',
+  'position',
+  'searchVector',
+]);
 const GRAPHQL_ROOT_FIELD_INTROSPECTION_SELECTION = {
   __schema: {
     queryType: {
@@ -231,6 +254,20 @@ const splitSlackBodyIntoChunks = (
 
 let coreQueryRootFieldsPromise: Promise<CoreQueryRootFieldInfo[]> | null = null;
 
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> =>
+  await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }),
+  ]);
+
 const buildSectionBlocks = (title: string, body: string): Record<string, unknown>[] =>
   splitSlackBodyIntoChunks(body).map((chunk, index) => ({
     type: 'section',
@@ -304,16 +341,20 @@ const getCoreQueryRootFieldInfos = async (): Promise<CoreQueryRootFieldInfo[]> =
         : createCoreClient();
 
       try {
-        const response = await client.query<{
-          __schema?: {
-            queryType?: {
-              fields?: Array<{
-                name?: string | null;
-                type?: GraphQlTypeReference | null;
-              }>;
-            } | null;
-          };
-        }>(GRAPHQL_ROOT_FIELD_INTROSPECTION_SELECTION);
+        const response = await withTimeout(
+          client.query<{
+            __schema?: {
+              queryType?: {
+                fields?: Array<{
+                  name?: string | null;
+                  type?: GraphQlTypeReference | null;
+                }>;
+              } | null;
+            };
+          }>(GRAPHQL_ROOT_FIELD_INTROSPECTION_SELECTION),
+          GRAPHQL_QUERY_TIMEOUT_MS,
+          'GraphQL root field introspection',
+        );
 
         return (
           response.__schema?.queryType?.fields ?? []
@@ -452,8 +493,12 @@ const queryObjectConnection = async (
 
   for (const rootFieldName of candidateRootFieldNames) {
     try {
-      const response = await client.query<Record<string, unknown>>(
-        buildObjectQuerySelection(rootFieldName, selection, first),
+      const response = await withTimeout(
+        client.query<Record<string, unknown>>(
+          buildObjectQuerySelection(rootFieldName, selection, first),
+        ),
+        GRAPHQL_QUERY_TIMEOUT_MS,
+        `GraphQL object query (${rootFieldName})`,
       );
       const connection = response[rootFieldName] as
         | { edges?: Array<{ node?: Record<string, unknown> }> }
@@ -478,6 +523,57 @@ const queryObjectConnection = async (
 const toString = (value: unknown): string | null =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 
+const isIsoDateOnly = (value: string): boolean =>
+  /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+const isIsoDateTime = (value: string): boolean =>
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value);
+
+const formatDateTime = (value: string): string => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return `${new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)} KST`;
+};
+
+const formatDynamicFieldValue = (
+  field: ObjectFieldMetadata,
+  value: string | number | boolean | null,
+): string | number | boolean | null => {
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? '예' : '아니오';
+  }
+
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  if (field.type === 'DATE' || isIsoDateOnly(value)) {
+    return value.slice(0, 10);
+  }
+
+  if (field.type === 'DATE_TIME' || isIsoDateTime(value)) {
+    return formatDateTime(value);
+  }
+
+  return value;
+};
+
 const formatCurrency = (value: Record<string, unknown>): string | null => {
   if (typeof value.amountMicros !== 'number') {
     return null;
@@ -490,6 +586,28 @@ const formatCurrency = (value: Record<string, unknown>): string | null => {
       : 'KRW';
 
   return `${new Intl.NumberFormat('ko-KR').format(amount)} ${currencyCode}`;
+};
+
+const parseComparableDate = (value: string): Date | null => {
+  if (isIsoDateOnly(value)) {
+    const parsed = new Date(`${value}T00:00:00+09:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const normalized = value.replace(' KST', '+09:00').replace(' ', 'T');
+  const parsed = new Date(normalized);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getDaysUntil = (value: string): number | null => {
+  const target = parseComparableDate(value);
+
+  if (!target) {
+    return null;
+  }
+
+  return Math.ceil((target.getTime() - Date.now()) / 86_400_000);
 };
 
 const tokenize = (text: string): string[] =>
@@ -1193,7 +1311,11 @@ const buildPriorityFromFields = (
         normalizedValue.includes('주의')
       ) {
         score += 60;
-        reasons.push(`${label} 리스크`);
+        reasons.push(
+          normalizedLabel.includes('risk') || normalizedLabel.includes('리스크')
+            ? label
+            : `${label} 리스크`,
+        );
       }
 
       if (
@@ -1205,8 +1327,30 @@ const buildPriorityFromFields = (
         normalizedValue.includes('overdue') ||
         normalizedValue.includes('만료')
       ) {
-        score += 55;
-        reasons.push(`${label} 기한`);
+        const daysUntil = getDaysUntil(rawValue);
+
+        if (daysUntil !== null) {
+          if (daysUntil <= 30) {
+            score += 80;
+            reasons.push(`${label} 30일 이내`);
+          } else if (daysUntil <= 60) {
+            score += 60;
+            reasons.push(`${label} 60일 이내`);
+          } else if (daysUntil <= 90) {
+            score += 40;
+            reasons.push(`${label} 90일 이내`);
+          } else {
+            score += 20;
+            reasons.push(label);
+          }
+        } else {
+          score += 55;
+          reasons.push(
+            normalizedLabel.includes('기한') || normalizedLabel.includes('만료')
+              ? label
+              : `${label} 기한`,
+          );
+        }
       }
 
       if (
@@ -1236,6 +1380,19 @@ const buildPriorityFromFields = (
       ) {
         score += 15;
       }
+
+      if (
+        normalizedLabel.includes('다음 접점') ||
+        normalizedLabel.includes('next contact') ||
+        normalizedLabel.includes('followup')
+      ) {
+        const daysUntil = getDaysUntil(rawValue);
+
+        if (daysUntil !== null && daysUntil <= 7) {
+          score += 18;
+          reasons.push(`${label} 임박`);
+        }
+      }
     }
 
     if (
@@ -1257,7 +1414,7 @@ const buildPriorityFromFields = (
 
   return {
     score,
-    reasons: reasons.slice(0, 4),
+    reasons: uniqueNonEmpty(reasons).slice(0, 4),
   };
 };
 
@@ -1268,6 +1425,10 @@ const flattenRecord = (
   const flattenedFields: Record<string, string | number | boolean | null> = {};
 
   for (const field of fields) {
+    if (HIDDEN_DYNAMIC_FIELD_NAMES.has(field.name)) {
+      continue;
+    }
+
     if (!(field.name in record)) {
       continue;
     }
@@ -1277,7 +1438,7 @@ const flattenRecord = (
       continue;
     }
 
-    flattenedFields[field.label] = flattened;
+    flattenedFields[field.label] = formatDynamicFieldValue(field, flattened);
   }
 
   const titleCandidate =
@@ -1306,7 +1467,7 @@ const buildRecordDetailBody = (records: FlattenedDynamicRecord[]): string =>
     .map((record, index) => {
       const lines = Object.entries(record.fields)
         .filter(([, value]) => value !== null && String(value).trim().length > 0)
-        .slice(0, 8)
+        .slice(0, 7)
         .map(([label, value]) => `- ${label}: ${value}`);
 
       return [
@@ -1316,6 +1477,35 @@ const buildRecordDetailBody = (records: FlattenedDynamicRecord[]): string =>
       ].join('\n');
     })
     .join('\n\n');
+
+const buildExecutiveSummaryBody = ({
+  objectLabel,
+  records,
+  totalCount,
+}: {
+  objectLabel: string;
+  records: FlattenedDynamicRecord[];
+  totalCount: number;
+}): string => {
+  if (records.length === 0) {
+    return `${objectLabel} 데이터가 없어 추가 분석 포인트가 없습니다.`;
+  }
+
+  const topTitles = records
+    .slice(0, 3)
+    .map((record) => record.title)
+    .join(', ');
+  const averagePriority =
+    Math.round(
+      records.reduce((sum, record) => sum + record.priorityScore, 0) / records.length,
+    ) || 0;
+
+  return [
+    `• 전체 ${totalCount}건 중 우선 검토 대상으로 ${records.length}건을 정리했습니다.`,
+    `• 상위 검토 순서는 ${topTitles}입니다.`,
+    `• 현재 목록의 평균 우선순위 점수는 ${averagePriority}점입니다.`,
+  ].join('\n');
+};
 
 const buildDynamicOpinion = ({
   objectLabel,
@@ -1328,12 +1518,38 @@ const buildDynamicOpinion = ({
     return `${objectLabel} 데이터가 없어 추가 점검 대상이 없습니다.`;
   }
 
-  const top = records[0];
+  const urgentCount = records.filter((record) =>
+    record.priorityReasons.some((reason) => reason.includes('30일 이내')),
+  ).length;
+  const riskCount = records.filter((record) =>
+    record.priorityReasons.some((reason) => reason.includes('리스크')),
+  ).length;
 
-  return `${top.title}부터 우선 점검하는 것이 좋습니다. ${
-    top.priorityReasons.join(', ') ||
-    `${objectLabel} 핵심 필드를 기준으로 정렬했습니다.`
-  }`;
+  const topRecommendations = records.slice(0, 3).map((record, index) => {
+    const highlights = Object.entries(record.fields)
+      .filter(([, value]) => value !== null && String(value).trim().length > 0)
+      .slice(0, 3)
+      .map(([label, value]) => `${label} ${value}`)
+      .join(', ');
+
+    return `${index + 1}. ${record.title}: ${
+      record.priorityReasons.join(', ') || highlights || '핵심 필드 추가 확인 필요'
+    }`;
+  });
+
+  return [
+    `포트폴리오 진단`,
+    `• 전체 상위 항목 중 ${urgentCount}건이 30일 이내 대응이 필요한 일정 중심 항목입니다.`,
+    `• ${riskCount}건은 리스크 신호가 직접 표기되어 있어 담당자 접촉 이력과 갱신 의사 확인을 우선 점검해야 합니다.`,
+    '',
+    '우선 검토 순서',
+    ...topRecommendations,
+    '',
+    '권고 액션',
+    '• 상위 항목부터 상태, 기한, 금액, 최근 활동 관련 필드의 최신성을 먼저 확인하고, 불명확한 값은 즉시 정리하세요.',
+    '• 우선순위 사유가 기한 또는 리스크 중심으로 잡힌 건은 담당자 후속 일정, 내부 메모, 갱신 의사, 파트너 협업 상태를 같은 날 안에 보강하는 편이 좋습니다.',
+    `• ${objectLabel} 보고서는 상위 3건을 이번 주 실행 리스트로 별도 관리하고, 이후 항목은 일정 임박도와 금액 기준으로 2차 정렬해 후속 대응 범위를 넓히는 것이 효율적입니다.`,
+  ].join('\n');
 };
 
 const buildFallbackDynamicReply = ({
@@ -1356,6 +1572,11 @@ const buildFallbackDynamicReply = ({
           ? `${objectLabel} 상세 목록`
           : `${objectLabel} 요약`;
   const detailBody = buildRecordDetailBody(records);
+  const executiveSummary = buildExecutiveSummaryBody({
+    objectLabel,
+    records,
+    totalCount,
+  });
 
   return {
     text:
@@ -1371,6 +1592,13 @@ const buildFallbackDynamicReply = ({
             `*${reportLabel}*\n` +
             `• 대상 레코드: *${totalCount}건*\n` +
             `• 응답 형태: *${reportMode}*`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*핵심 요약*\n${executiveSummary}`,
         },
       },
       ...(reportMode === 'PRIORITY_REPORT'
@@ -1390,7 +1618,7 @@ const buildFallbackDynamicReply = ({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*의견*\n${buildDynamicOpinion({
+          text: `*권고 사항*\n${buildDynamicOpinion({
             objectLabel,
             records,
           })}`,
@@ -1399,6 +1627,29 @@ const buildFallbackDynamicReply = ({
     ],
   };
 };
+
+const buildSynthesisContextRecords = (
+  records: FlattenedDynamicRecord[],
+): Array<Record<string, unknown>> =>
+  records.slice(0, 5).map((record) => ({
+    title: record.title,
+    priorityScore: record.priorityScore,
+    priorityReasons: record.priorityReasons,
+    fields: Object.fromEntries(Object.entries(record.fields).slice(0, 4)),
+  }));
+
+const shouldSkipDynamicSynthesis = ({
+  classification,
+  reportMode,
+  records,
+}: {
+  classification: SlackIntentClassification;
+  reportMode: DynamicObjectQueryPlan['reportMode'];
+  records: FlattenedDynamicRecord[];
+}): boolean =>
+  classification.detailLevel === 'DETAILED' ||
+  reportMode === 'PRIORITY_REPORT' ||
+  records.length > SUMMARY_RECORD_LIMIT;
 
 const isDynamicReplySufficient = ({
   reply,
@@ -1487,11 +1738,15 @@ const resolvePlanTarget = (
 const buildDynamicQueryReply = async ({
   classification,
   text,
+  onProgress,
 }: {
   classification: SlackIntentClassification;
   text: string;
+  onProgress?: (stage: DynamicObjectQueryProgressStage) => Promise<void> | void;
 }): Promise<DynamicObjectQueryResult> => {
+  await onProgress?.('DYNAMIC_METADATA_LOADING');
   const definitions = await fetchQueryableObjectDefinitions();
+  await onProgress?.('DYNAMIC_METADATA_READY');
   if (definitions.length === 0) {
     return {
       handled: false,
@@ -1509,11 +1764,13 @@ const buildDynamicQueryReply = async ({
   const plannerCatalog = rankedDefinitions
     .slice(0, MAX_PLANNER_CANDIDATES)
     .map((item) => toCatalogItem(item.definition));
+  await onProgress?.('DYNAMIC_OBJECT_PLANNING');
   const planned = await planDynamicObjectQueryWithDiagnostics({
     text,
     objectCatalog: plannerCatalog,
   });
   const plan = planned.plan;
+  await onProgress?.('DYNAMIC_OBJECT_PLANNED');
 
   const selectedDefinition =
     resolvePlanTarget(plan, definitions) ??
@@ -1546,6 +1803,7 @@ const buildDynamicQueryReply = async ({
 
   const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
   const selection = buildFieldSelectionForDefinition(selectedDefinition, definitionsById);
+  await onProgress?.('DYNAMIC_RECORD_QUERYING');
   const { rootFieldName, connection } = await queryObjectConnection(
     selectedDefinition,
     selection,
@@ -1557,6 +1815,7 @@ const buildDynamicQueryReply = async ({
   const rawRecords = (connection?.edges ?? [])
     .map((edge) => edge.node)
     .filter((node): node is Record<string, unknown> => Boolean(node));
+  await onProgress?.('DYNAMIC_RECORDS_READY');
 
   if (rawRecords.length === 0) {
     return {
@@ -1600,6 +1859,54 @@ const buildDynamicQueryReply = async ({
     records: reportRecords,
     totalCount: rawRecords.length,
   });
+  await onProgress?.('DYNAMIC_REPORT_BUILT');
+  const skipSynthesis = shouldSkipDynamicSynthesis({
+    classification,
+    reportMode,
+    records: reportRecords,
+  });
+
+  if (skipSynthesis) {
+    await onProgress?.('DYNAMIC_SYNTHESIS_SKIPPED');
+
+    return {
+      handled: true,
+      reply: fallbackReply,
+      resultJson: {
+        handled: true,
+        selectedObject: toCatalogItem(selectedDefinition),
+        selectedRootField: rootFieldName,
+        plan,
+        aiDiagnostics: {
+          objectPlanning: planned.aiDiagnostics,
+          querySynthesis: {
+            provider: 'anthropic',
+            operation: 'query_synthesis',
+            attempted: false,
+            succeeded: false,
+            model: null,
+            status: null,
+            reason: 'skipped',
+            errorMessage:
+              'Detailed dynamic report used deterministic renderer to avoid oversized synthesis calls',
+            cache: {
+              enabled: true,
+              type: 'ephemeral',
+              ttl: '5m',
+            },
+            usage: null,
+          } satisfies AnthropicInvocationDiagnostics,
+        },
+        replySource: 'fallback',
+        count: rawRecords.length,
+        fieldCount: selectedDefinition.fields.length,
+        selection,
+        records: reportRecords,
+      },
+    };
+  }
+
+  await onProgress?.('DYNAMIC_SYNTHESIS_STARTED');
   const synthesized = await synthesizeCrmQueryReplyWithDiagnostics({
     requestText: cleanSlackText(text),
     classification,
@@ -1607,19 +1914,12 @@ const buildDynamicQueryReply = async ({
       queryLabel: `${selectedDefinition.labelPlural} 동적 조회`,
       selectedObject: toCatalogItem(selectedDefinition),
       plan,
-      selection,
-      records: reportRecords,
+      records: buildSynthesisContextRecords(reportRecords),
       count: rawRecords.length,
       fieldCount: selectedDefinition.fields.length,
-      rankedCatalog: rankedDefinitions.slice(0, 5).map(({ definition, score, matchScore, supportScore, reasons }) => ({
-        object: toCatalogItem(definition),
-        score,
-        matchScore,
-        supportScore,
-        reasons,
-      })),
     },
   });
+  await onProgress?.('DYNAMIC_SYNTHESIS_COMPLETED');
 
   const reply =
     synthesized.reply &&
@@ -1683,15 +1983,21 @@ export const findRelevantObjectCatalog = async (
 export const fetchAndFlattenDynamicObjectRecords = async ({
   text,
   classification,
+  onProgress,
 }: {
   text: string;
   classification: SlackIntentClassification;
-}): Promise<DynamicObjectQueryResult> => buildDynamicQueryReply({ text, classification });
+  onProgress?: (stage: DynamicObjectQueryProgressStage) => Promise<void> | void;
+}): Promise<DynamicObjectQueryResult> =>
+  buildDynamicQueryReply({ text, classification, onProgress });
 
 export const buildDynamicObjectQueryReply = async ({
   classification,
   text,
+  onProgress,
 }: {
   classification: SlackIntentClassification;
   text: string;
-}): Promise<DynamicObjectQueryResult> => buildDynamicQueryReply({ classification, text });
+  onProgress?: (stage: DynamicObjectQueryProgressStage) => Promise<void> | void;
+}): Promise<DynamicObjectQueryResult> =>
+  buildDynamicQueryReply({ classification, text, onProgress });

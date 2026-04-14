@@ -10,6 +10,7 @@ import type {
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
 import { buildDynamicObjectQueryReply } from 'src/utils/dynamic-object-query';
+import type { DynamicObjectQueryProgressStage } from 'src/utils/dynamic-object-query';
 import type { AnthropicInvocationDiagnostics } from 'src/utils/intelligence';
 import { synthesizeCrmQueryReplyWithDiagnostics } from 'src/utils/intelligence';
 import { normalizeText, truncate } from 'src/utils/strings';
@@ -2270,9 +2271,11 @@ const resolveCrmQueryRoute = (
 export const answerCrmQuery = async ({
   classification,
   text,
+  onProgress,
 }: {
   classification: SlackIntentClassification;
   text: string;
+  onProgress?: (stage: DynamicObjectQueryProgressStage) => Promise<void> | void;
 }): Promise<{
   reply: SlackReply;
   resultJson: Record<string, unknown>;
@@ -2285,6 +2288,7 @@ export const answerCrmQuery = async ({
       const dynamicResult = await metadataAwareDynamicHandler({
         classification,
         text,
+        onProgress,
       });
 
       if (dynamicResult.handled) {

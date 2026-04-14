@@ -42,7 +42,7 @@ import {
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
 const ANTHROPIC_MAX_TOKENS = 1024;
-const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 4096;
+const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 2200;
 const ANTHROPIC_WRITE_DRAFT_MAX_TOKENS = 2048;
 const CRM_QUERY_PLAN_TOOL_NAME = 'plan_crm_query';
 const CRM_OBJECT_QUERY_PLAN_TOOL_NAME = 'plan_crm_object_query';
@@ -96,6 +96,8 @@ export type AnthropicInvocationDiagnostics = {
     | 'missing_tool_use'
     | 'empty_response'
     | 'insufficient_reply'
+    | 'timeout'
+    | 'skipped'
     | null;
   errorMessage: string | null;
   cache: {
@@ -109,6 +111,26 @@ export type AnthropicInvocationDiagnostics = {
     cacheCreationInputTokens: number | null;
     cacheReadInputTokens: number | null;
   } | null;
+};
+
+const ANTHROPIC_REQUEST_TIMEOUT_MS = 15_000;
+
+const fetchWithTimeout = async (
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 type AnthropicInvocationResult<TValue extends Record<string, unknown>> = {
@@ -1789,6 +1811,7 @@ const callAnthropicStructuredJsonWithDiagnostics = async <
   maxTokens = ANTHROPIC_MAX_TOKENS,
   effort = 'high',
   tools,
+  enableThinking = true,
 }: {
   operation: string;
   systemPrompt: string;
@@ -1797,6 +1820,7 @@ const callAnthropicStructuredJsonWithDiagnostics = async <
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
   tools?: AnthropicToolDefinition[];
+  enableThinking?: boolean;
 }): Promise<AnthropicInvocationResult<TResponse>> => {
   const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
@@ -1815,31 +1839,59 @@ const callAnthropicStructuredJsonWithDiagnostics = async <
   }
 
   const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      cache_control: ANTHROPIC_CACHE_CONTROL,
-      ...buildAnthropicThinkingConfig(model),
-      output_config: {
-        effort,
-        format: {
-          type: 'json_schema',
-          schema,
-        },
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(
+      ANTHROPIC_MESSAGES_URL,
+      {
+        method: 'POST',
+        headers: buildAnthropicRequestHeaders(apiKey),
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          cache_control: ANTHROPIC_CACHE_CONTROL,
+          ...(enableThinking ? buildAnthropicThinkingConfig(model) : {}),
+          output_config: {
+            effort,
+            format: {
+              type: 'json_schema',
+              schema,
+            },
+          },
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+        }),
       },
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+      ANTHROPIC_REQUEST_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        error.message.toLowerCase().includes('aborted'))
+    ) {
+      return {
+        data: null,
+        diagnostics: buildAnthropicDiagnostics({
+          operation,
+          model,
+          attempted: true,
+          succeeded: false,
+          reason: 'timeout',
+          errorMessage: `Anthropic request timed out after ${ANTHROPIC_REQUEST_TIMEOUT_MS}ms`,
+        }),
+      };
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
     let errorMessage: string | null = null;
@@ -1908,6 +1960,7 @@ const callAnthropicStructuredJson = async <
     maxTokens?: number;
     effort?: 'low' | 'medium' | 'high';
     tools?: AnthropicToolDefinition[];
+    enableThinking?: boolean;
   },
 ): Promise<TResponse | null> => {
   const result = await callAnthropicStructuredJsonWithDiagnostics<TResponse>(args);
@@ -1926,6 +1979,7 @@ const callAnthropicToolInputWithDiagnostics = async <
   inputSchema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
   effort = 'high',
+  enableThinking = true,
 }: {
   operation: string;
   systemPrompt: string;
@@ -1935,6 +1989,7 @@ const callAnthropicToolInputWithDiagnostics = async <
   inputSchema: JsonSchema;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
+  enableThinking?: boolean;
 }): Promise<AnthropicInvocationResult<TInput>> => {
   const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
@@ -1953,34 +2008,62 @@ const callAnthropicToolInputWithDiagnostics = async <
   }
 
   const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      cache_control: ANTHROPIC_CACHE_CONTROL,
-      ...buildAnthropicThinkingConfig(model),
-      output_config: {
-        effort,
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(
+      ANTHROPIC_MESSAGES_URL,
+      {
+        method: 'POST',
+        headers: buildAnthropicRequestHeaders(apiKey),
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          cache_control: ANTHROPIC_CACHE_CONTROL,
+          ...(enableThinking ? buildAnthropicThinkingConfig(model) : {}),
+          output_config: {
+            effort,
+          },
+          system: systemPrompt,
+          tools: [
+            {
+              name: toolName,
+              description: toolDescription,
+              strict: true,
+              input_schema: inputSchema,
+            },
+          ],
+          messages: [
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+        }),
       },
-      system: systemPrompt,
-      tools: [
-        {
-          name: toolName,
-          description: toolDescription,
-          strict: true,
-          input_schema: inputSchema,
-        },
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+      ANTHROPIC_REQUEST_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        error.message.toLowerCase().includes('aborted'))
+    ) {
+      return {
+        data: null,
+        diagnostics: buildAnthropicDiagnostics({
+          operation,
+          model,
+          attempted: true,
+          succeeded: false,
+          reason: 'timeout',
+          errorMessage: `Anthropic request timed out after ${ANTHROPIC_REQUEST_TIMEOUT_MS}ms`,
+        }),
+      };
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
     let errorMessage: string | null = null;
@@ -2050,6 +2133,7 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>(
     inputSchema: JsonSchema;
     maxTokens?: number;
     effort?: 'low' | 'medium' | 'high';
+    enableThinking?: boolean;
   },
 ): Promise<TInput | null> => {
   const result = await callAnthropicToolInputWithDiagnostics<TInput>(args);
@@ -2074,6 +2158,9 @@ export const classifySlackTextWithDiagnostics = async (
       toolDescription: 'Plan the CRM query intent and answer style.',
       inputSchema: crmQueryPlanSchema,
       userPrompt: buildQueryPlannerUserPrompt(cleanedText),
+      maxTokens: 256,
+      effort: 'low',
+      enableThinking: false,
     });
 
   if (!aiResult.data) {
@@ -2163,6 +2250,9 @@ export const planDynamicObjectQueryWithDiagnostics = async ({
         cleanedText,
         objectCatalog,
       }),
+      maxTokens: 256,
+      effort: 'low',
+      enableThinking: false,
     });
 
   if (!aiResult.data) {
@@ -2332,8 +2422,8 @@ export const synthesizeCrmQueryReplyWithDiagnostics = async ({
       systemPrompt: buildQuerySynthesisSystemPrompt(),
       schema: crmReplySchema,
       maxTokens: ANTHROPIC_QUERY_REPLY_MAX_TOKENS,
-      effort: 'high',
-      tools: [buildWebSearchTool()],
+      effort: 'medium',
+      enableThinking: false,
       userPrompt: buildQuerySynthesisUserPrompt({
         cleanedText,
         classification,
