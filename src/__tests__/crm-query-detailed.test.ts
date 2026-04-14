@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { query, synthesizeCrmQueryReply } = vi.hoisted(() => ({
+const {
+  query,
+  synthesizeCrmQueryReply,
+  synthesizeCrmQueryReplyWithDiagnostics,
+} = vi.hoisted(() => ({
   query: vi.fn(),
   synthesizeCrmQueryReply: vi.fn(),
+  synthesizeCrmQueryReplyWithDiagnostics: vi.fn(),
 }));
 
 vi.mock('src/utils/core-client', () => ({
@@ -13,12 +18,32 @@ vi.mock('src/utils/core-client', () => ({
 
 vi.mock('src/utils/intelligence', () => ({
   synthesizeCrmQueryReply,
+  synthesizeCrmQueryReplyWithDiagnostics,
 }));
 
 describe('detailed crm query fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     synthesizeCrmQueryReply.mockResolvedValue(null);
+    synthesizeCrmQueryReplyWithDiagnostics.mockResolvedValue({
+      reply: null,
+      aiDiagnostics: {
+        provider: 'anthropic',
+        operation: 'query_synthesis',
+        attempted: false,
+        succeeded: false,
+        model: null,
+        status: null,
+        reason: 'missing_api_key',
+        errorMessage: 'test',
+        cache: {
+          enabled: true,
+          type: 'ephemeral',
+          ttl: '5m',
+        },
+        usage: null,
+      },
+    });
   });
 
   afterEach(() => {

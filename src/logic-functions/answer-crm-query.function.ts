@@ -1,14 +1,15 @@
 import { ANSWER_QUERY_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { answerCrmQuery } from 'src/utils/crm-query';
 import { defineLogicFunction } from 'src/utils/define-logic-function';
-import { classifySlackText } from 'src/utils/intelligence';
+import { classifySlackTextWithDiagnostics } from 'src/utils/intelligence';
 
 const handler = async ({
   text,
 }: {
   text: string;
 }): Promise<Record<string, unknown>> => {
-  const classification = await classifySlackText(text);
+  const classified = await classifySlackTextWithDiagnostics(text);
+  const classification = classified.classification;
   const answer = await answerCrmQuery({
     classification,
     text,
@@ -16,6 +17,13 @@ const handler = async ({
 
   return {
     classification,
+    aiDiagnostics: {
+      classification: classified.aiDiagnostics,
+      ...(answer.resultJson?.aiDiagnostics &&
+      typeof answer.resultJson.aiDiagnostics === 'object'
+        ? (answer.resultJson.aiDiagnostics as Record<string, unknown>)
+        : {}),
+    },
     ...answer,
     text: answer.reply.text,
     blocks: answer.reply.blocks,

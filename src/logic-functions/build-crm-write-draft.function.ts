@@ -1,16 +1,19 @@
 import { BUILD_DRAFT_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
 import { defineLogicFunction } from 'src/utils/define-logic-function';
-import { buildCrmWriteDraft } from 'src/utils/intelligence';
+import { buildCrmWriteDraftWithDiagnostics } from 'src/utils/intelligence';
 
 const handler = async ({
   text,
 }: {
   text: string;
 }): Promise<Record<string, unknown>> => {
-  const draft = await buildCrmWriteDraft(text);
+  const drafted = await buildCrmWriteDraftWithDiagnostics(text);
 
   return {
-    draft,
+    draft: drafted.draft,
+    aiDiagnostics: {
+      writeDraft: drafted.aiDiagnostics,
+    },
   };
 };
 

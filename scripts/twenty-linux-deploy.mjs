@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -231,41 +231,79 @@ const runOrThrow = (command, args, options = {}) => {
 
 const getYarnCommand = () => (process.platform === 'win32' ? 'yarn.cmd' : 'yarn');
 
+const runShellOrThrow = (command, options = {}) => {
+  const shell = process.env.SHELL || (process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh');
+  const args =
+    process.platform === 'win32'
+      ? ['/d', '/s', '/c', command]
+      : ['-lc', command];
+  const result = spawnSync(shell, args, {
+    stdio: 'inherit',
+    ...options,
+  });
+
+  if (result.status !== 0) {
+    throw new Error(`${command} failed with exit code ${result.status}`);
+  }
+};
+
 const createFixedTarball = async () => {
-  runOrThrow(getYarnCommand(), ['twenty', 'build']);
+  runShellOrThrow(`${getYarnCommand()} twenty build --tarball`);
 
   const manifestPath = path.join(OUTPUT_DIR, 'manifest.json');
-  const packageJsonPath = path.join(process.cwd(), 'package.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const outputPackageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'));
   const normalizedManifest = normalizeManifestPaths(manifest);
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'twenty-linux-deploy-'));
-  const packageDir = path.join(tempDir, 'package');
-  const fixedTarballPath = path.join(
-    OUTPUT_DIR,
-    `${outputPackageJson.name}-${outputPackageJson.version}-linux.tgz`,
+  const outputEntries = spawnSync(
+    process.platform === 'win32' ? 'cmd' : 'find',
+    process.platform === 'win32'
+      ? ['/c', `dir /b "${OUTPUT_DIR}\\*.tgz"`]
+      : [OUTPUT_DIR, '-maxdepth', '1', '-name', '*.tgz'],
+    {
+      shell: process.platform === 'win32',
+      encoding: 'utf8',
+    },
   );
 
-  await cp(OUTPUT_DIR, packageDir, {
-    recursive: true,
-    filter: (source) => !source.endsWith('.tgz'),
-  });
-  await writeFile(
-    path.join(packageDir, 'manifest.json'),
-    JSON.stringify(normalizedManifest, null, 2),
-  );
-  await writeFile(
-    path.join(packageDir, 'package.json'),
-    JSON.stringify(outputPackageJson, null, 2),
-  );
+  if (outputEntries.status !== 0) {
+    throw new Error('Failed to locate generated Twenty tarball');
+  }
+
+  const tarballCandidates = outputEntries.stdout
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) =>
+      path.isAbsolute(entry) ? entry : path.join(OUTPUT_DIR, path.basename(entry)),
+    )
+    .filter((entry) => entry.endsWith('.tgz'));
+
+  const fixedTarballPath =
+    tarballCandidates.find((entry) => !entry.endsWith('-linux.tgz')) ??
+    tarballCandidates[0];
+
+  if (!fixedTarballPath) {
+    throw new Error('Twenty build succeeded but no tarball was generated');
+  }
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'twenty-linux-deploy-'));
 
   try {
-    runOrThrow('tar', ['-czf', fixedTarballPath, '-C', tempDir, 'package']);
+    runOrThrow('tar', ['-xzf', fixedTarballPath, '-C', tempDir]);
+    await writeFile(
+      path.join(tempDir, 'package', 'manifest.json'),
+      JSON.stringify(normalizedManifest, null, 2),
+    );
+
+    const normalizedTarballPath = fixedTarballPath.replace(/\.tgz$/, '-linux.tgz');
+    runOrThrow('tar', ['-czf', normalizedTarballPath, '-C', tempDir, 'package']);
+
+    return {
+      fixedTarballPath: normalizedTarballPath,
+      normalizedManifest,
+    };
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
-
-  return { fixedTarballPath, normalizedManifest };
 };
 
 const postMetadata = async ({ apiUrl, apiKey, body }) => {

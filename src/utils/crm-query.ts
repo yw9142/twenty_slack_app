@@ -10,7 +10,8 @@ import type {
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
 import { buildDynamicObjectQueryReply } from 'src/utils/dynamic-object-query';
-import { synthesizeCrmQueryReply } from 'src/utils/intelligence';
+import type { AnthropicInvocationDiagnostics } from 'src/utils/intelligence';
+import { synthesizeCrmQueryReplyWithDiagnostics } from 'src/utils/intelligence';
 import { normalizeText, truncate } from 'src/utils/strings';
 import {
   createWorkspaceQueryClient,
@@ -1418,24 +1419,50 @@ const maybeSynthesizeReply = async ({
   classification: SlackIntentClassification;
   crmContext: Record<string, unknown>;
   fallbackReply: SlackReply;
-}): Promise<SlackReply> => {
-  const synthesized = await synthesizeCrmQueryReply({
+}): Promise<{
+  reply: SlackReply;
+  aiDiagnostics: AnthropicInvocationDiagnostics;
+  replySource: 'anthropic' | 'fallback';
+}> => {
+  const synthesized = await synthesizeCrmQueryReplyWithDiagnostics({
     requestText,
     classification,
     crmContext,
   });
 
-  if (!synthesized) {
-    return fallbackReply;
+  if (!synthesized.reply) {
+    return {
+      reply: fallbackReply,
+      aiDiagnostics: synthesized.aiDiagnostics,
+      replySource: 'fallback',
+    };
   }
 
-  return isDetailedReplySufficient({
-    classification,
-    crmContext,
-    reply: synthesized,
-  })
-    ? synthesized
-    : fallbackReply;
+  if (
+    isDetailedReplySufficient({
+      classification,
+      crmContext,
+      reply: synthesized.reply,
+    })
+  ) {
+    return {
+      reply: synthesized.reply,
+      aiDiagnostics: synthesized.aiDiagnostics,
+      replySource: 'anthropic',
+    };
+  }
+
+  return {
+    reply: fallbackReply,
+    aiDiagnostics: {
+      ...synthesized.aiDiagnostics,
+      succeeded: false,
+      reason: 'insufficient_reply',
+      errorMessage:
+        'Anthropic reply was present but fell below the sufficiency threshold',
+    },
+    replySource: 'fallback',
+  };
 };
 
 export const buildMonthlyNewOpinion = ({
@@ -1708,17 +1735,25 @@ const buildMonthlyNewReply = async ({
           ],
         } satisfies SlackReply);
 
+  const synthesized = await maybeSynthesizeReply({
+    requestText: text,
+    classification,
+    crmContext: {
+      queryLabel,
+      ...resultJson,
+    },
+    fallbackReply,
+  });
+
   return {
-    reply: await maybeSynthesizeReply({
-      requestText: text,
-      classification,
-      crmContext: {
-        queryLabel,
-        ...resultJson,
+    reply: synthesized.reply,
+    resultJson: {
+      ...resultJson,
+      aiDiagnostics: {
+        querySynthesis: synthesized.aiDiagnostics,
       },
-      fallbackReply,
-    }),
-    resultJson,
+      replySource: synthesized.replySource,
+    },
   };
 };
 
@@ -1780,17 +1815,25 @@ const buildOpportunityStatusReply = async ({
     ],
   } satisfies SlackReply;
 
+  const synthesized = await maybeSynthesizeReply({
+    requestText: text,
+    classification,
+    crmContext: {
+      queryLabel: '영업기회 상태',
+      ...resultJson,
+    },
+    fallbackReply,
+  });
+
   return {
-    reply: await maybeSynthesizeReply({
-      requestText: text,
-      classification,
-      crmContext: {
-        queryLabel: '영업기회 상태',
-        ...resultJson,
+    reply: synthesized.reply,
+    resultJson: {
+      ...resultJson,
+      aiDiagnostics: {
+        querySynthesis: synthesized.aiDiagnostics,
       },
-      fallbackReply,
-    }),
-    resultJson,
+      replySource: synthesized.replySource,
+    },
   };
 };
 
@@ -1853,17 +1896,25 @@ const buildRiskReply = async ({
     ],
   } satisfies SlackReply;
 
+  const synthesized = await maybeSynthesizeReply({
+    requestText: text,
+    classification,
+    crmContext: {
+      queryLabel: '리스크 영업기회',
+      ...resultJson,
+    },
+    fallbackReply,
+  });
+
   return {
-    reply: await maybeSynthesizeReply({
-      requestText: text,
-      classification,
-      crmContext: {
-        queryLabel: '리스크 영업기회',
-        ...resultJson,
+    reply: synthesized.reply,
+    resultJson: {
+      ...resultJson,
+      aiDiagnostics: {
+        querySynthesis: synthesized.aiDiagnostics,
       },
-      fallbackReply,
-    }),
-    resultJson,
+      replySource: synthesized.replySource,
+    },
   };
 };
 
@@ -2010,17 +2061,25 @@ const buildLicensePriorityReply = async ({
           ],
         } satisfies SlackReply);
 
+  const synthesized = await maybeSynthesizeReply({
+    requestText: text,
+    classification,
+    crmContext: {
+      queryLabel,
+      ...resultJson,
+    },
+    fallbackReply,
+  });
+
   return {
-    reply: await maybeSynthesizeReply({
-      requestText: text,
-      classification,
-      crmContext: {
-        queryLabel,
-        ...resultJson,
+    reply: synthesized.reply,
+    resultJson: {
+      ...resultJson,
+      aiDiagnostics: {
+        querySynthesis: synthesized.aiDiagnostics,
       },
-      fallbackReply,
-    }),
-    resultJson,
+      replySource: synthesized.replySource,
+    },
   };
 };
 
@@ -2099,17 +2158,25 @@ const buildGeneralSummaryReply = async ({
     ],
   } satisfies SlackReply;
 
+  const synthesized = await maybeSynthesizeReply({
+    requestText: text,
+    classification,
+    crmContext: {
+      queryLabel: '현재 CRM 요약',
+      ...resultJson,
+    },
+    fallbackReply,
+  });
+
   return {
-    reply: await maybeSynthesizeReply({
-      requestText: text,
-      classification,
-      crmContext: {
-        queryLabel: '현재 CRM 요약',
-        ...resultJson,
+    reply: synthesized.reply,
+    resultJson: {
+      ...resultJson,
+      aiDiagnostics: {
+        querySynthesis: synthesized.aiDiagnostics,
       },
-      fallbackReply,
-    }),
-    resultJson,
+      replySource: synthesized.replySource,
+    },
   };
 };
 

@@ -7,8 +7,8 @@ import {
   summarizeApplyResult,
 } from 'src/utils/crm-write';
 import {
-  buildCrmWriteDraft,
-  classifySlackText,
+  buildCrmWriteDraftWithDiagnostics,
+  classifySlackTextWithDiagnostics,
 } from 'src/utils/intelligence';
 import {
   findSlackRequestById,
@@ -188,7 +188,8 @@ export const processSlackRequest = async (
   try {
     const requestText =
       slackRequest.normalizedText ?? slackRequest.rawText ?? '';
-    const classification = await classifySlackText(requestText);
+    const classified = await classifySlackTextWithDiagnostics(requestText);
+    const classification = classified.classification;
     await updateSlackRequest({
       id: slackRequest.id,
       data: {
@@ -197,6 +198,9 @@ export const processSlackRequest = async (
         processingStatus: 'CLASSIFIED',
         resultJson: {
           classification,
+          aiDiagnostics: {
+            classification: classified.aiDiagnostics,
+          },
         },
         lastProcessedAt: nowIso(),
       },
@@ -212,7 +216,17 @@ export const processSlackRequest = async (
         id: slackRequest.id,
         data: {
           processingStatus: 'ANSWERED',
-          resultJson: answer.resultJson,
+          resultJson: {
+            classification,
+            ...(answer.resultJson ?? {}),
+            aiDiagnostics: {
+              classification: classified.aiDiagnostics,
+              ...(answer.resultJson?.aiDiagnostics &&
+              typeof answer.resultJson.aiDiagnostics === 'object'
+                ? (answer.resultJson.aiDiagnostics as Record<string, unknown>)
+                : {}),
+            },
+          },
           lastProcessedAt: nowIso(),
         },
       });
@@ -226,7 +240,8 @@ export const processSlackRequest = async (
     }
 
     if (classification.intentType === 'WRITE_DRAFT') {
-      const draft = await buildCrmWriteDraft(requestText);
+      const drafted = await buildCrmWriteDraftWithDiagnostics(requestText);
+      const draft = drafted.draft;
       const draftedRequest = await updateSlackRequest({
         id: slackRequest.id,
         data: {
@@ -234,6 +249,10 @@ export const processSlackRequest = async (
           draftJson: draft,
           resultJson: {
             classification,
+            aiDiagnostics: {
+              classification: classified.aiDiagnostics,
+              writeDraft: drafted.aiDiagnostics,
+            },
           },
           lastProcessedAt: nowIso(),
         },

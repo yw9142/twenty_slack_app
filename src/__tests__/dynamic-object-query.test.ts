@@ -4,12 +4,16 @@ const {
   fetchQueryableObjectDefinitions,
   coreQuery,
   planDynamicObjectQuery,
+  planDynamicObjectQueryWithDiagnostics,
   synthesizeCrmQueryReply,
+  synthesizeCrmQueryReplyWithDiagnostics,
 } = vi.hoisted(() => ({
   fetchQueryableObjectDefinitions: vi.fn(),
   coreQuery: vi.fn(),
   planDynamicObjectQuery: vi.fn(),
+  planDynamicObjectQueryWithDiagnostics: vi.fn(),
   synthesizeCrmQueryReply: vi.fn(),
+  synthesizeCrmQueryReplyWithDiagnostics: vi.fn(),
 }));
 
 vi.mock('src/utils/metadata-client', () => ({
@@ -30,7 +34,9 @@ vi.mock('src/utils/intelligence', async () => {
   return {
     ...actual,
     planDynamicObjectQuery,
+    planDynamicObjectQueryWithDiagnostics,
     synthesizeCrmQueryReply,
+    synthesizeCrmQueryReplyWithDiagnostics,
   };
 });
 
@@ -360,6 +366,25 @@ describe('dynamic object query reply', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     synthesizeCrmQueryReply.mockResolvedValue(null);
+    synthesizeCrmQueryReplyWithDiagnostics.mockResolvedValue({
+      reply: null,
+      aiDiagnostics: {
+        provider: 'anthropic',
+        operation: 'query_synthesis',
+        attempted: false,
+        succeeded: false,
+        model: null,
+        status: null,
+        reason: 'missing_api_key',
+        errorMessage: 'test',
+        cache: {
+          enabled: true,
+          type: 'ephemeral',
+          ttl: '5m',
+        },
+        usage: null,
+      },
+    });
   });
 
   afterEach(() => {
@@ -382,6 +407,35 @@ describe('dynamic object query reply', () => {
       targetObjectNamePlural: 'licenses',
       targetObjectLabelSingular: '라이선스',
       targetObjectLabelPlural: '라이선스',
+    });
+    planDynamicObjectQueryWithDiagnostics.mockResolvedValue({
+      plan: {
+        handled: true,
+        confidence: 0.9,
+        summary: '라이선스 객체 조회',
+        reportMode: 'PRIORITY_REPORT',
+        targetObjectId: 'license-object',
+        targetObjectNameSingular: 'license',
+        targetObjectNamePlural: 'licenses',
+        targetObjectLabelSingular: '라이선스',
+        targetObjectLabelPlural: '라이선스',
+      },
+      aiDiagnostics: {
+        provider: 'anthropic',
+        operation: 'dynamic_object_planning',
+        attempted: true,
+        succeeded: true,
+        model: 'claude-sonnet-4-6',
+        status: 200,
+        reason: null,
+        errorMessage: null,
+        cache: {
+          enabled: true,
+          type: 'ephemeral',
+          ttl: '5m',
+        },
+        usage: null,
+      },
     });
 
     coreQuery.mockImplementation(async (query: Record<string, unknown>) => {
@@ -550,6 +604,25 @@ describe('dynamic object query reply', () => {
     ]);
 
     planDynamicObjectQuery.mockResolvedValue(null);
+    planDynamicObjectQueryWithDiagnostics.mockResolvedValue({
+      plan: null,
+      aiDiagnostics: {
+        provider: 'anthropic',
+        operation: 'dynamic_object_planning',
+        attempted: false,
+        succeeded: false,
+        model: null,
+        status: null,
+        reason: 'missing_api_key',
+        errorMessage: 'test',
+        cache: {
+          enabled: true,
+          type: 'ephemeral',
+          ttl: '5m',
+        },
+        usage: null,
+      },
+    });
 
     const { buildDynamicObjectQueryReply } = await import(
       'src/utils/dynamic-object-query'

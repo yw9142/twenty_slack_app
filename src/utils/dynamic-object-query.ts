@@ -1,7 +1,10 @@
-import type { DynamicObjectQueryPlan } from 'src/utils/intelligence';
+import type {
+  AnthropicInvocationDiagnostics,
+  DynamicObjectQueryPlan,
+} from 'src/utils/intelligence';
 import {
-  planDynamicObjectQuery,
-  synthesizeCrmQueryReply,
+  planDynamicObjectQueryWithDiagnostics,
+  synthesizeCrmQueryReplyWithDiagnostics,
 } from 'src/utils/intelligence';
 import { createCoreClient } from 'src/utils/core-client';
 import {
@@ -1506,10 +1509,11 @@ const buildDynamicQueryReply = async ({
   const plannerCatalog = rankedDefinitions
     .slice(0, MAX_PLANNER_CANDIDATES)
     .map((item) => toCatalogItem(item.definition));
-  const plan = await planDynamicObjectQuery({
+  const planned = await planDynamicObjectQueryWithDiagnostics({
     text,
     objectCatalog: plannerCatalog,
   });
+  const plan = planned.plan;
 
   const selectedDefinition =
     resolvePlanTarget(plan, definitions) ??
@@ -1526,6 +1530,9 @@ const buildDynamicQueryReply = async ({
       resultJson: {
         handled: false,
         reason: 'UNMATCHED_OBJECT',
+        aiDiagnostics: {
+          objectPlanning: planned.aiDiagnostics,
+        },
         rankedCatalog: rankedDefinitions.slice(0, 5).map(({ definition, score, matchScore, supportScore, reasons }) => ({
           object: toCatalogItem(definition),
           score,
@@ -1562,6 +1569,9 @@ const buildDynamicQueryReply = async ({
         selectedObject: toCatalogItem(selectedDefinition),
         selectedRootField: rootFieldName,
         plan,
+        aiDiagnostics: {
+          objectPlanning: planned.aiDiagnostics,
+        },
         count: 0,
         fieldCount: selectedDefinition.fields.length,
         records: [],
@@ -1590,7 +1600,7 @@ const buildDynamicQueryReply = async ({
     records: reportRecords,
     totalCount: rawRecords.length,
   });
-  const synthesized = await synthesizeCrmQueryReply({
+  const synthesized = await synthesizeCrmQueryReplyWithDiagnostics({
     requestText: cleanSlackText(text),
     classification,
     crmContext: {
@@ -1612,13 +1622,32 @@ const buildDynamicQueryReply = async ({
   });
 
   const reply =
-    synthesized &&
+    synthesized.reply &&
     isDynamicReplySufficient({
-      reply: synthesized,
+      reply: synthesized.reply,
       records: reportRecords,
     })
-      ? synthesized
+      ? synthesized.reply
       : fallbackReply;
+  const replySource =
+    synthesized.reply &&
+    isDynamicReplySufficient({
+      reply: synthesized.reply,
+      records: reportRecords,
+    })
+      ? 'anthropic'
+      : 'fallback';
+  const synthesisDiagnostics: AnthropicInvocationDiagnostics =
+    replySource === 'anthropic'
+      ? synthesized.aiDiagnostics
+      : {
+          ...synthesized.aiDiagnostics,
+          succeeded: false,
+          reason: synthesized.reply ? 'insufficient_reply' : synthesized.aiDiagnostics.reason,
+          errorMessage: synthesized.reply
+            ? 'Anthropic reply was present but fell below the sufficiency threshold'
+            : synthesized.aiDiagnostics.errorMessage,
+        };
 
   return {
     handled: true,
@@ -1628,6 +1657,11 @@ const buildDynamicQueryReply = async ({
       selectedObject: toCatalogItem(selectedDefinition),
       selectedRootField: rootFieldName,
       plan,
+      aiDiagnostics: {
+        objectPlanning: planned.aiDiagnostics,
+        querySynthesis: synthesisDiagnostics,
+      },
+      replySource,
       count: rawRecords.length,
       fieldCount: selectedDefinition.fields.length,
       selection,
