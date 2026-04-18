@@ -3,7 +3,7 @@ FROM node:24-alpine
 WORKDIR /app/slack-proxy
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN apk add --no-cache git && npm ci --omit=dev
 
 COPY lib.mjs runner.mjs server-logic.mjs server.mjs ./
 

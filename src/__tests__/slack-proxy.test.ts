@@ -467,6 +467,16 @@ describe('slack proxy runner', () => {
     expect(firstCall.prompt).toContain('inputSchema');
     expect(firstCall.prompt).toContain('policy');
     expect(firstCall.prompt).toContain('load-slack-request');
+    expect(firstCall.prompt).toContain(
+      'You act as a Korean enterprise software sales strategist and CRM analyst for Daou Data.',
+    );
+    expect(firstCall.prompt).toContain(
+      'If the enterprise-sales skill is available, use it to reason about champions, stakeholders, business outcomes, indecision, procurement friction, enablement gaps, and partner strategy.',
+    );
+    expect(firstCall.prompt).toContain('Response style:');
+    expect(firstCall.prompt).toContain(
+      '- For analytical, strategy, briefing, summary, or recommendation requests, use short markdown sections and flat bullet lists.',
+    );
 
     expect(result).toEqual({
       kind: 'query',
