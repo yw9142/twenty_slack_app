@@ -1,6 +1,6 @@
 {
   "name": "daou-slack-agent",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "Slack-driven CRM automation app for Daou Data on Twenty",
   "author": "Daou Data Virtualization Division Demo",
   "homepage": "https://www.daoudata.co.kr",

@@ -5,6 +5,10 @@ const { mutation, query } = vi.hoisted(() => ({
   query: vi.fn(),
 }));
 
+const { fetchObjectFields } = vi.hoisted(() => ({
+  fetchObjectFields: vi.fn(),
+}));
+
 vi.mock('src/utils/core-client', () => ({
   createCoreClient: () => ({
     query,
@@ -12,9 +16,58 @@ vi.mock('src/utils/core-client', () => ({
   }),
 }));
 
+vi.mock('src/utils/metadata-client', () => ({
+  fetchObjectFields,
+}));
+
+const getMetadataFields = (kind: string) => {
+  switch (kind) {
+    case 'company':
+      return [
+        { name: 'name' },
+        { name: 'domainName' },
+        { name: 'linkedinLink' },
+        { name: 'employees' },
+        { name: 'companyStatus' },
+      ];
+    case 'person':
+      return [
+        { name: 'name' },
+        { name: 'company', relation: { type: 'MANY_TO_ONE' } },
+        { name: 'jobTitle' },
+        { name: 'emails' },
+        { name: 'linkedinLink' },
+        { name: 'city' },
+      ];
+    case 'opportunity':
+      return [
+        { name: 'name' },
+        { name: 'company', relation: { type: 'MANY_TO_ONE' } },
+        { name: 'pointOfContact', relation: { type: 'MANY_TO_ONE' } },
+        { name: 'stage' },
+        { name: 'closeDate' },
+        { name: 'amount' },
+      ];
+    case 'note':
+      return [{ name: 'title' }, { name: 'bodyV2' }];
+    case 'task':
+      return [
+        { name: 'title' },
+        { name: 'bodyV2' },
+        { name: 'status' },
+        { name: 'dueAt' },
+      ];
+    default:
+      return [];
+  }
+};
+
 describe('crm write helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchObjectFields.mockImplementation(async (kind: string) =>
+      getMetadataFields(kind),
+    );
   });
 
   it('removes helper lookup fields before opportunity mutations', async () => {
@@ -180,6 +233,51 @@ describe('crm write helpers', () => {
       mutation.mock.calls[0]?.[0]?.createOpportunity?.__args?.data ?? {};
 
     expect(payload).not.toHaveProperty('contactName');
+  });
+
+  it('normalizes company status aliases and drops unsupported company fields', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValue({
+      createCompany: {
+        id: 'company-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링',
+            status: 'PROSPECT',
+            unsupportedField: 'drop-me',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createCompany: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링',
+            companyStatus: 'PROSPECT',
+          }),
+        },
+        id: true,
+      },
+    });
+
+    const payload = mutation.mock.calls[0]?.[0]?.createCompany?.__args?.data ?? {};
+
+    expect(payload).not.toHaveProperty('status');
+    expect(payload).not.toHaveProperty('unsupportedField');
   });
 
   it('creates note and task target links for resolved company, person, and opportunity records', async () => {

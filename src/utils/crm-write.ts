@@ -16,6 +16,7 @@ import {
   fetchPeople,
   fetchTasks,
 } from 'src/utils/crm-query';
+import { fetchObjectFields } from 'src/utils/metadata-client';
 import { toRichTextValue } from 'src/utils/rich-text';
 import { normalizeText, splitFullName, toTitleCaseKey } from 'src/utils/strings';
 
@@ -104,6 +105,14 @@ const HELPER_LOOKUP_FIELDS = [
   'opportunityName',
 ] as const;
 
+const FALLBACK_WRITABLE_FIELDS: Partial<Record<EntityKind, string[]>> = {
+  company: ['name', 'domainName', 'linkedinLink', 'employees', 'companyStatus'],
+  person: ['name', 'companyId', 'jobTitle', 'emails', 'linkedinLink', 'city'],
+  opportunity: ['name', 'companyId', 'pointOfContactId', 'stage', 'closeDate', 'amount'],
+  note: ['title', 'bodyV2'],
+  task: ['title', 'bodyV2', 'status', 'dueAt'],
+};
+
 const ACTION_PRIORITY: Record<EntityKind, number> = {
   company: 10,
   person: 20,
@@ -122,6 +131,8 @@ type ResolvedEntityMaps = {
   opportunityIdsByName: Map<string, string>;
 };
 
+const writableFieldNamesByKind = new Map<EntityKind, Promise<Set<string>>>();
+
 const toNormalizedKey = (value: string | null | undefined): string =>
   normalizeText(value);
 
@@ -132,6 +143,38 @@ const toPersonLookupKey = ({
   name: string | null | undefined;
   companyName?: string | null | undefined;
 }): string => `${toNormalizedKey(name)}::${toNormalizedKey(companyName)}`;
+
+const getWritableFieldNames = async (kind: EntityKind): Promise<Set<string>> => {
+  const cached = writableFieldNamesByKind.get(kind);
+
+  if (cached) {
+    return cached;
+  }
+
+  const loader = (async () => {
+    try {
+      const fields = await fetchObjectFields(kind);
+
+      if (fields.length > 0) {
+        return new Set(
+          fields.flatMap((field) =>
+            field.relation
+              ? [field.name, `${field.name}Id`]
+              : [field.name],
+          ),
+        );
+      }
+    } catch {
+      // Fall back to the static field list when metadata lookup is unavailable.
+    }
+
+    return new Set(FALLBACK_WRITABLE_FIELDS[kind] ?? []);
+  })();
+
+  writableFieldNamesByKind.set(kind, loader);
+
+  return loader;
+};
 
 const lookupCompanyIdByName = async (name: string): Promise<string | null> => {
   const companies = await fetchCompanies();
@@ -236,6 +279,14 @@ const normalizeEntityData = async (
   const aliasNormalizedData = { ...data };
 
   if (
+    kind === 'company' &&
+    typeof aliasNormalizedData.status === 'string' &&
+    !aliasNormalizedData.companyStatus
+  ) {
+    aliasNormalizedData.companyStatus = aliasNormalizedData.status;
+  }
+
+  if (
     typeof aliasNormalizedData.contactName === 'string' &&
     !aliasNormalizedData.pointOfContactName
   ) {
@@ -316,7 +367,18 @@ const normalizeEntityData = async (
     delete nextData.currencyCode;
   }
 
-  return nextData;
+  const writableFieldNames = await getWritableFieldNames(kind);
+
+  if (writableFieldNames.size === 0) {
+    return nextData;
+  }
+
+  return Object.fromEntries(
+    Object.entries(nextData).filter(([fieldName]) =>
+      writableFieldNames.has(fieldName),
+    ),
+  );
+
 };
 
 const findRecordIdByLookup = async (
