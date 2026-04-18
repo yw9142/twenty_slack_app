@@ -233,7 +233,18 @@ const normalizeEntityData = async (
   data: Record<string, unknown>,
   resolved?: ResolvedEntityMaps,
 ): Promise<Record<string, unknown>> => {
-  const nextData = await hydrateCommonReferenceIds(data, resolved);
+  const aliasNormalizedData = { ...data };
+
+  if (
+    typeof aliasNormalizedData.contactName === 'string' &&
+    !aliasNormalizedData.pointOfContactName
+  ) {
+    aliasNormalizedData.pointOfContactName = aliasNormalizedData.contactName;
+  }
+
+  delete aliasNormalizedData.contactName;
+
+  const nextData = await hydrateCommonReferenceIds(aliasNormalizedData, resolved);
 
   for (const field of HELPER_LOOKUP_FIELDS) {
     delete nextData[field];

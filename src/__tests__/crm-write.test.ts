@@ -102,6 +102,86 @@ describe('crm write helpers', () => {
     expect(payload).not.toHaveProperty('primaryPartnerCompanyName');
   });
 
+  it('normalizes contactName aliases before opportunity create mutations', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    query
+      .mockResolvedValueOnce({
+        companies: {
+          edges: [
+            {
+              node: {
+                id: 'company-1',
+                name: '서광건설엔지니어링',
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        people: {
+          edges: [
+            {
+              node: {
+                id: 'person-1',
+                name: {
+                  firstName: '박성훈',
+                  lastName: '',
+                },
+                company: {
+                  name: '서광건설엔지니어링',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+    mutation.mockResolvedValue({
+      createOpportunity: {
+        id: 'opp-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'opportunity',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            companyName: '서광건설엔지니어링',
+            contactName: '박성훈',
+            stage: 'DISCOVERY',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createOpportunity: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            companyId: 'company-1',
+            pointOfContactId: 'person-1',
+            stage: 'DISCOVERY',
+          }),
+        },
+        id: true,
+      },
+    });
+
+    const payload =
+      mutation.mock.calls[0]?.[0]?.createOpportunity?.__args?.data ?? {};
+
+    expect(payload).not.toHaveProperty('contactName');
+  });
+
   it('creates note and task target links for resolved company, person, and opportunity records', async () => {
     const { applyApprovedDraft } = await import('src/utils/crm-write');
 
