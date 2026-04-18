@@ -15,7 +15,7 @@ export type EntityKind =
   | 'note'
   | 'task';
 
-export type EntityOperation = 'create' | 'update';
+export type EntityOperation = 'create' | 'update' | 'delete';
 
 export type EntityHints = {
   companies: string[];
@@ -60,6 +60,7 @@ export type SlackIntentClassification = {
 export type CrmActionRecord = {
   kind: EntityKind;
   operation: EntityOperation;
+  targetId?: string;
   lookup?: Record<string, string>;
   data: Record<string, unknown>;
 };
@@ -71,7 +72,7 @@ export type DraftReviewField = {
 
 export type DraftReviewItem = {
   kind: EntityKind;
-  decision: 'CREATE' | 'UPDATE' | 'SKIP';
+  decision: 'CREATE' | 'UPDATE' | 'DELETE' | 'SKIP';
   target: string;
   matchedRecord?: string | null;
   reason?: string | null;
@@ -122,6 +123,92 @@ export type SlackRequestRecord = {
   approvedByWorkspaceMemberId: string | null;
   receivedAt: string | null;
   lastProcessedAt: string | null;
+};
+
+export type SlackThreadEntityReferenceKind =
+  | 'company'
+  | 'person'
+  | 'opportunity'
+  | 'license';
+
+export type SlackThreadSnapshotItem = {
+  id: string;
+  kind: SlackThreadEntityReferenceKind;
+  label: string;
+  order: number;
+  summary: string | null;
+};
+
+export type SlackThreadLastQuerySnapshot = {
+  requestId: string;
+  items: SlackThreadSnapshotItem[];
+};
+
+export type SlackThreadAssistantOutcome =
+  | 'query'
+  | 'write_draft'
+  | 'applied'
+  | 'rejected'
+  | 'system';
+
+export type SlackThreadTurn = {
+  requestId: string;
+  userText: string | null;
+  assistantText: string | null;
+  outcome: SlackThreadAssistantOutcome | null;
+};
+
+export type SlackThreadSummary = {
+  text: string;
+};
+
+export type SlackThreadWorkingContext = {
+  selectedCompanyIds: string[];
+  selectedPersonIds: string[];
+  selectedOpportunityIds: string[];
+  selectedLicenseIds: string[];
+  lastQuerySnapshot: SlackThreadLastQuerySnapshot | null;
+};
+
+export type SlackThreadPendingApproval = {
+  sourceSlackRequestId: string;
+  summary: string;
+  actions: CrmActionRecord[];
+  review: CrmWriteReview | null;
+  status: ProcessingStatus | null;
+};
+
+export type SlackThreadContextRecord = {
+  id: string;
+  name: string | null;
+  slackTeamId: string | null;
+  slackChannelId: string | null;
+  slackThreadTs: string | null;
+  threadKey: string;
+  summaryJson: SlackThreadSummary;
+  recentTurnsJson: SlackThreadTurn[];
+  contextJson: SlackThreadWorkingContext;
+  pendingApprovalJson: SlackThreadPendingApproval | null;
+  lastSlackRequestId: string | null;
+  lastRepliedAt: string | null;
+};
+
+export type SlackThreadSelectedEntitiesPatch = {
+  companyIds?: string[];
+  personIds?: string[];
+  opportunityIds?: string[];
+  licenseIds?: string[];
+};
+
+export type SlackThreadContextPatch = {
+  assistantTurn: {
+    text: string;
+    outcome: SlackThreadAssistantOutcome;
+  };
+  summary: string;
+  selectedEntities: SlackThreadSelectedEntitiesPatch;
+  lastQuerySnapshot?: SlackThreadLastQuerySnapshot | null;
+  pendingApproval?: SlackThreadPendingApproval | null;
 };
 
 export type BasicCompanyRecord = {
@@ -206,6 +293,7 @@ export type BasicNoteRecord = {
 
 export type ApplyDraftResult = {
   created: Array<{ kind: EntityKind; id: string }>;
+  deleted: Array<{ kind: EntityKind; id: string }>;
   updated: Array<{ kind: EntityKind; id: string }>;
   skipped: string[];
   errors: string[];

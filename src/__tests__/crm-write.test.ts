@@ -5,6 +5,10 @@ const { mutation, query } = vi.hoisted(() => ({
   query: vi.fn(),
 }));
 
+const { fetchObjectFields } = vi.hoisted(() => ({
+  fetchObjectFields: vi.fn(),
+}));
+
 vi.mock('src/utils/core-client', () => ({
   createCoreClient: () => ({
     query,
@@ -12,9 +16,80 @@ vi.mock('src/utils/core-client', () => ({
   }),
 }));
 
+vi.mock('src/utils/metadata-client', () => ({
+  fetchObjectFields,
+}));
+
+const getMetadataFields = (kind: string) => {
+  switch (kind) {
+    case 'company':
+      return [
+        { name: 'name', type: 'TEXT' },
+        { name: 'domainName', type: 'LINKS' },
+        { name: 'linkedinLink', type: 'LINKS' },
+        { name: 'employees', type: 'NUMBER' },
+        {
+          name: 'companyStatus',
+          type: 'SELECT',
+          options: [
+            { label: '활성', value: 'ACTIVE' },
+            { label: '휴면', value: 'DORMANT' },
+            { label: '비활성', value: 'INACTIVE' },
+          ],
+        },
+      ];
+    case 'person':
+      return [
+        { name: 'name' },
+        { name: 'company', relation: { type: 'MANY_TO_ONE' } },
+        { name: 'jobTitle' },
+        { name: 'emails' },
+        { name: 'linkedinLink' },
+        { name: 'city' },
+      ];
+    case 'opportunity':
+      return [
+        { name: 'name', type: 'TEXT' },
+        { name: 'company', relation: { type: 'MANY_TO_ONE' } },
+        { name: 'pointOfContact', relation: { type: 'MANY_TO_ONE' } },
+        {
+          name: 'stage',
+          type: 'SELECT',
+          options: [
+            { label: '발굴', value: 'IDENTIFIED' },
+            { label: '자격확인', value: 'QUALIFIED' },
+            { label: '벤더협의', value: 'VENDOR_ALIGNED' },
+            { label: '제안/PoC', value: 'DISCOVERY_POC' },
+            { label: '견적', value: 'QUOTED' },
+            { label: '협상', value: 'NEGOTIATION' },
+            { label: '수주', value: 'CLOSED_WON' },
+            { label: '실주', value: 'CLOSED_LOST' },
+            { label: '보류', value: 'ON_HOLD' },
+          ],
+        },
+        { name: 'closeDate', type: 'DATE' },
+        { name: 'amount', type: 'CURRENCY' },
+      ];
+    case 'note':
+      return [{ name: 'title' }, { name: 'bodyV2' }];
+    case 'task':
+      return [
+        { name: 'title' },
+        { name: 'bodyV2' },
+        { name: 'status' },
+        { name: 'dueAt' },
+      ];
+    default:
+      return [];
+  }
+};
+
 describe('crm write helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchObjectFields.mockImplementation(async (kind: string) =>
+      getMetadataFields(kind),
+    );
   });
 
   it('removes helper lookup fields before opportunity mutations', async () => {
@@ -100,6 +175,170 @@ describe('crm write helpers', () => {
     expect(payload).not.toHaveProperty('pointOfContactName');
     expect(payload).not.toHaveProperty('primaryVendorCompanyName');
     expect(payload).not.toHaveProperty('primaryPartnerCompanyName');
+  });
+
+  it('normalizes contactName aliases before opportunity create mutations', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    query
+      .mockResolvedValueOnce({
+        companies: {
+          edges: [
+            {
+              node: {
+                id: 'company-1',
+                name: '서광건설엔지니어링',
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        people: {
+          edges: [
+            {
+              node: {
+                id: 'person-1',
+                name: {
+                  firstName: '박성훈',
+                  lastName: '',
+                },
+                company: {
+                  name: '서광건설엔지니어링',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+    mutation.mockResolvedValue({
+      createOpportunity: {
+        id: 'opp-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'opportunity',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            companyName: '서광건설엔지니어링',
+            contactName: '박성훈',
+            stage: 'DISCOVERY',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createOpportunity: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            companyId: 'company-1',
+            pointOfContactId: 'person-1',
+            stage: 'DISCOVERY_POC',
+          }),
+        },
+        id: true,
+      },
+    });
+
+    const payload =
+      mutation.mock.calls[0]?.[0]?.createOpportunity?.__args?.data ?? {};
+
+    expect(payload).not.toHaveProperty('contactName');
+  });
+
+  it('drops invalid company status values and unsupported company fields', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValue({
+      createCompany: {
+        id: 'company-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링',
+            status: 'PROSPECT',
+            unsupportedField: 'drop-me',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createCompany: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링',
+          }),
+        },
+        id: true,
+      },
+    });
+
+    const payload = mutation.mock.calls[0]?.[0]?.createCompany?.__args?.data ?? {};
+
+    expect(payload).not.toHaveProperty('status');
+    expect(payload).not.toHaveProperty('companyStatus');
+    expect(payload).not.toHaveProperty('unsupportedField');
+  });
+
+  it('normalizes opportunity stage aliases to allowed metadata option values', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValue({
+      createOpportunity: {
+        id: 'opp-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'opportunity',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            stage: 'Lead',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createOpportunity: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            stage: 'IDENTIFIED',
+          }),
+        },
+        id: true,
+      },
+    });
   });
 
   it('creates note and task target links for resolved company, person, and opportunity records', async () => {
@@ -306,5 +545,144 @@ describe('crm write helpers', () => {
     expect(notePayload).not.toHaveProperty('pointOfContactId');
     expect(taskPayload).not.toHaveProperty('companyId');
     expect(taskPayload).not.toHaveProperty('pointOfContactId');
+  });
+
+  it('builds approval previews for delete actions from resolved records', async () => {
+    const { previewApprovalAction } = await import('src/utils/crm-write');
+
+    query.mockResolvedValueOnce({
+      companies: {
+        edges: [
+          {
+            node: {
+              id: 'company-1',
+              name: '미래금융',
+            },
+          },
+        ],
+      },
+    });
+
+    const preview = await previewApprovalAction({
+      kind: 'company',
+      operation: 'delete',
+      lookup: {
+        id: 'company-1',
+        name: '미래금융',
+      },
+      data: {},
+    });
+
+    expect(preview).toEqual({
+      action: {
+        kind: 'company',
+        operation: 'delete',
+        lookup: {
+          id: 'company-1',
+          name: '미래금융',
+        },
+        data: {},
+      },
+      matchedRecord: {
+        id: 'company-1',
+        label: '미래금융',
+      },
+      reviewItem: {
+        kind: 'company',
+        decision: 'DELETE',
+        target: '미래금융',
+        matchedRecord: '미래금융',
+        reason: '승인 후 실제 삭제가 실행됩니다.',
+        fields: [],
+      },
+    });
+  });
+
+  it('deletes matched records during approved draft application', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValueOnce({
+      deleteCompany: {
+        id: 'company-1',
+      },
+    });
+
+    const result = await applyApprovedDraft({
+      summary: '삭제 초안',
+      confidence: 0.95,
+      sourceText: '미래금융 삭제',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'delete',
+          lookup: {
+            id: 'company-1',
+            name: '미래금융',
+          },
+          data: {},
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      deleteCompany: {
+        __args: {
+          id: 'company-1',
+        },
+        id: true,
+      },
+    });
+    expect(result).toEqual({
+      created: [],
+      deleted: [{ kind: 'company', id: 'company-1' }],
+      errors: [],
+      skipped: [],
+      updated: [],
+    });
+  });
+
+  it('prefers targetId over lookup resolution when deleting', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValueOnce({
+      deleteCompany: {
+        id: 'company-target',
+      },
+    });
+
+    const result = await applyApprovedDraft({
+      summary: '삭제 초안',
+      confidence: 0.95,
+      sourceText: '미래금융 삭제',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'delete',
+          targetId: 'company-target',
+          lookup: {
+            name: '미래금융',
+          },
+          data: {},
+        },
+      ],
+    });
+
+    expect(query).not.toHaveBeenCalled();
+    expect(mutation).toHaveBeenCalledWith({
+      deleteCompany: {
+        __args: {
+          id: 'company-target',
+        },
+        id: true,
+      },
+    });
+    expect(result.deleted).toEqual([
+      {
+        kind: 'company',
+        id: 'company-target',
+      },
+    ]);
   });
 });

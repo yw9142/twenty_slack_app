@@ -7,9 +7,13 @@ const {
   fetchLicenses,
   fetchNotes,
   fetchTasks,
+  executeImmediateCreateAction,
   findSlackRequestById,
   updateSlackRequest,
   postSlackReplyForRequest,
+  previewApprovalAction,
+  loadOrCreateThreadContextForSlackRequest,
+  applyThreadContextPatchToSlackRequest,
 } = vi.hoisted(() => ({
   fetchCompanies: vi.fn(),
   fetchPeople: vi.fn(),
@@ -17,9 +21,13 @@ const {
   fetchLicenses: vi.fn(),
   fetchNotes: vi.fn(),
   fetchTasks: vi.fn(),
+  executeImmediateCreateAction: vi.fn(),
   findSlackRequestById: vi.fn(),
   updateSlackRequest: vi.fn(),
   postSlackReplyForRequest: vi.fn(),
+  previewApprovalAction: vi.fn(),
+  loadOrCreateThreadContextForSlackRequest: vi.fn(),
+  applyThreadContextPatchToSlackRequest: vi.fn(),
 }));
 
 vi.mock('src/utils/env', () => ({
@@ -44,6 +52,11 @@ vi.mock('src/utils/crm-query', () => ({
   fetchTasks,
 }));
 
+vi.mock('src/utils/crm-write', () => ({
+  executeImmediateCreateAction,
+  previewApprovalAction,
+}));
+
 vi.mock('src/utils/slack-intake-service', () => ({
   findSlackRequestById,
   updateSlackRequest,
@@ -53,13 +66,23 @@ vi.mock('src/utils/slack-api', () => ({
   postSlackReplyForRequest,
 }));
 
+vi.mock('src/utils/slack-thread-context-service', () => ({
+  loadOrCreateThreadContextForSlackRequest,
+  applyThreadContextPatchToSlackRequest,
+}));
+
 import {
+  handleCreateRecordRoute,
+  handleDeleteRecordRoute,
+  handleGetToolCatalogRoute,
   handleLoadSlackRequestRoute,
   handleMarkRunnerErrorRoute,
   handlePostSlackReplyRoute,
+  handleSaveAppliedResultRoute,
   handleSaveQueryAnswerRoute,
   handleSaveWriteDraftRoute,
   handleSearchCompaniesRoute,
+  handleUpdateRecordRoute,
 } from 'src/utils/codex-tools';
 
 describe('codex tools', () => {
@@ -78,6 +101,23 @@ describe('codex tools', () => {
       resultJson: { ok: true },
     });
     postSlackReplyForRequest.mockResolvedValue(undefined);
+    loadOrCreateThreadContextForSlackRequest.mockResolvedValue({
+      id: 'thread-context-1',
+      threadKey: 'T1:C1:thread-1',
+      summaryJson: { text: '' },
+      recentTurnsJson: [],
+      contextJson: {
+        selectedCompanyIds: [],
+        selectedPersonIds: [],
+        selectedOpportunityIds: [],
+        selectedLicenseIds: [],
+        lastQuerySnapshot: null,
+      },
+      pendingApprovalJson: null,
+      lastSlackRequestId: null,
+      lastRepliedAt: null,
+    });
+    applyThreadContextPatchToSlackRequest.mockResolvedValue(undefined);
     fetchCompanies.mockResolvedValue([
       { id: 'company-1', name: 'A은행' },
       { id: 'company-2', name: '미래금융' },
@@ -87,6 +127,42 @@ describe('codex tools', () => {
     fetchLicenses.mockResolvedValue([]);
     fetchNotes.mockResolvedValue([]);
     fetchTasks.mockResolvedValue([]);
+    executeImmediateCreateAction.mockResolvedValue({
+      kind: 'company',
+      operation: 'create',
+      id: 'company-1',
+    });
+    previewApprovalAction.mockResolvedValue({
+      action: {
+        kind: 'company',
+        operation: 'update',
+        targetId: 'company-1',
+        lookup: {
+          id: 'company-1',
+          name: '미래금융',
+        },
+        data: {
+          companyStatus: 'CUSTOMER',
+        },
+      },
+      matchedRecord: {
+        id: 'company-1',
+        label: '미래금융',
+      },
+      reviewItem: {
+        kind: 'company',
+        decision: 'UPDATE',
+        target: '미래금융',
+        matchedRecord: '미래금융',
+        reason: null,
+        fields: [
+          {
+            key: 'companyStatus',
+            value: 'CUSTOMER',
+          },
+        ],
+      },
+    });
   });
 
   it('rejects tool requests without the shared secret', async () => {
@@ -125,6 +201,59 @@ describe('codex tools', () => {
     });
   });
 
+  it('returns the shared tool catalog for the runner', async () => {
+    const result = await handleGetToolCatalogRoute({
+      body: null,
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    const toolCatalog = result.toolCatalog as {
+      modelVisibleTools: Array<{
+        name: string;
+        policy?: string;
+        inputSchema?: Record<string, unknown>;
+      }>;
+      internalTools: Array<{ name: string }>;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(toolCatalog.modelVisibleTools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'create-record' }),
+        expect.objectContaining({ name: 'update-record' }),
+        expect.objectContaining({ name: 'delete-record' }),
+      ]),
+    );
+    expect(toolCatalog.internalTools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'get-tool-catalog' }),
+        expect.objectContaining({ name: 'load-thread-context' }),
+        expect.objectContaining({ name: 'save-applied-result' }),
+      ]),
+    );
+    expect(
+      toolCatalog.modelVisibleTools.find(
+        (tool) => tool.name === 'search-opportunities',
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        policy: expect.stringContaining('"query": ""'),
+      }),
+    );
+    expect(
+      toolCatalog.modelVisibleTools.find((tool) => tool.name === 'delete-record'),
+    ).toEqual(
+      expect.objectContaining({
+        inputSchema: expect.objectContaining({
+          required: ['kind'],
+        }),
+      }),
+    );
+  });
+
   it('stores query answers with provider-neutral diagnostics', async () => {
     const result = await handleSaveQueryAnswerRoute({
       body: {
@@ -139,6 +268,29 @@ describe('codex tools', () => {
             attempted: true,
             succeeded: true,
           },
+        },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '응답입니다.',
+            outcome: 'query',
+          },
+          summary: '조회 응답을 마쳤다.',
+          selectedEntities: {
+            companyIds: ['company-2'],
+          },
+          lastQuerySnapshot: {
+            requestId: 'request-1',
+            items: [
+              {
+                id: 'company-2',
+                kind: 'company',
+                label: '미래금융',
+                order: 0,
+                summary: null,
+              },
+            ],
+          },
+          pendingApproval: null,
         },
       },
       headers: {
@@ -159,11 +311,48 @@ describe('codex tools', () => {
         }),
       }),
     });
+    expect(applyThreadContextPatchToSlackRequest).toHaveBeenCalledWith({
+      slackRequest: expect.objectContaining({
+        id: 'request-1',
+      }),
+      patch: expect.objectContaining({
+        assistantTurn: expect.objectContaining({
+          text: '응답입니다.',
+          outcome: 'query',
+        }),
+        summary: '조회 응답을 마쳤다.',
+      }),
+    });
     expect(result).toEqual({
       ok: true,
       processingStatus: 'ANSWERED',
       slackRequestId: 'request-1',
     });
+  });
+
+  it('rejects approval drafts without grounded actions', async () => {
+    const result = await handleSaveWriteDraftRoute({
+      body: {
+        slackRequestId: 'request-1',
+        draft: {
+          summary: '근거 없는 초안',
+          confidence: 0.8,
+          sourceText: '영업기회 수정해줘',
+          actions: [],
+          warnings: [],
+        },
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'draft.actions must contain at least one approval action',
+    });
+    expect(updateSlackRequest).not.toHaveBeenCalled();
   });
 
   it('filters company search results by text', async () => {
@@ -186,12 +375,12 @@ describe('codex tools', () => {
     ]);
   });
 
-  it('posts slack replies for request ids', async () => {
-    const result = await handlePostSlackReplyRoute({
+  it('executes immediate create tools through the CRM write helper', async () => {
+    const result = await handleCreateRecordRoute({
       body: {
-        slackRequestId: 'request-1',
-        reply: {
-          text: '완료',
+        kind: 'company',
+        data: {
+          name: '미래금융',
         },
       },
       headers: {
@@ -200,18 +389,156 @@ describe('codex tools', () => {
       },
     } as never);
 
-    expect(postSlackReplyForRequest).toHaveBeenCalledWith({
-      slackRequest: expect.objectContaining({
-        id: 'request-1',
-        processingStatus: 'RECEIVED',
-      }),
-      reply: {
-        text: '완료',
+    expect(executeImmediateCreateAction).toHaveBeenCalledWith({
+      kind: 'company',
+      operation: 'create',
+      data: {
+        name: '미래금융',
       },
-      replaceOriginal: false,
     });
     expect(result).toEqual({
       ok: true,
+      actionResult: {
+        id: 'company-1',
+        kind: 'company',
+        operation: 'create',
+      },
+    });
+  });
+
+  it('plans update actions instead of mutating immediately', async () => {
+    const result = await handleUpdateRecordRoute({
+      body: {
+        kind: 'company',
+        targetId: 'company-1',
+        data: {
+          companyStatus: 'CUSTOMER',
+        },
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(previewApprovalAction).toHaveBeenCalledWith({
+      kind: 'company',
+      operation: 'update',
+      targetId: 'company-1',
+      data: {
+        companyStatus: 'CUSTOMER',
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      plannedAction: expect.objectContaining({
+        operation: 'update',
+      }),
+      matchedRecord: expect.objectContaining({
+        id: 'company-1',
+      }),
+      reviewItem: expect.objectContaining({
+        decision: 'UPDATE',
+      }),
+    });
+  });
+
+  it('plans delete actions instead of mutating immediately', async () => {
+    previewApprovalAction.mockResolvedValueOnce({
+      action: {
+        kind: 'company',
+        operation: 'delete',
+        targetId: 'company-1',
+        data: {},
+      },
+      matchedRecord: {
+        id: 'company-1',
+        label: '미래금융',
+      },
+      reviewItem: {
+        kind: 'company',
+        decision: 'DELETE',
+        target: '미래금융',
+        matchedRecord: '미래금융',
+        reason: '승인 후 실제 삭제가 실행됩니다.',
+        fields: [],
+      },
+    });
+
+    const result = await handleDeleteRecordRoute({
+      body: {
+        kind: 'company',
+        targetId: 'company-1',
+        data: {},
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(previewApprovalAction).toHaveBeenCalledWith({
+      kind: 'company',
+      operation: 'delete',
+      targetId: 'company-1',
+      data: {},
+    });
+    expect(result).toEqual({
+      ok: true,
+      plannedAction: expect.objectContaining({
+        operation: 'delete',
+      }),
+      matchedRecord: expect.objectContaining({
+        id: 'company-1',
+      }),
+      reviewItem: expect.objectContaining({
+        decision: 'DELETE',
+      }),
+    });
+  });
+
+  it('stores applied results for immediate create flows', async () => {
+    updateSlackRequest.mockResolvedValueOnce({
+      id: 'request-1',
+      processingStatus: 'APPLIED',
+    });
+
+    const result = await handleSaveAppliedResultRoute({
+      body: {
+        slackRequestId: 'request-1',
+        reply: {
+          text: '미래금융 회사를 생성했습니다.',
+        },
+        resultJson: {
+          executedTools: [{ toolName: 'create-record' }],
+          aiDiagnostics: {
+            operation: 'applied',
+            attempted: true,
+            succeeded: true,
+          },
+        },
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(updateSlackRequest).toHaveBeenCalledWith({
+      id: 'request-1',
+      data: expect.objectContaining({
+        processingStatus: 'APPLIED',
+        resultJson: expect.objectContaining({
+          executedTools: [{ toolName: 'create-record' }],
+          reply: expect.objectContaining({
+            text: '미래금융 회사를 생성했습니다.',
+          }),
+        }),
+      }),
+    });
+    expect(result).toEqual({
+      ok: true,
+      processingStatus: 'APPLIED',
       slackRequestId: 'request-1',
     });
   });
@@ -229,7 +556,18 @@ describe('codex tools', () => {
           summary: '초안',
           confidence: 0.9,
           sourceText: '테스트',
-          actions: [],
+          actions: [
+            {
+              kind: 'opportunity',
+              operation: 'update',
+              lookup: {
+                id: 'opportunity-1',
+              },
+              data: {
+                stage: 'NEGOTIATION',
+              },
+            },
+          ],
           warnings: [],
         },
       },
@@ -304,6 +642,36 @@ describe('codex tools', () => {
     expect(result).toEqual({
       ok: true,
       processingStatus: 'ERROR',
+      slackRequestId: 'request-1',
+    });
+  });
+
+  it('posts slack replies for request ids', async () => {
+    const result = await handlePostSlackReplyRoute({
+      body: {
+        slackRequestId: 'request-1',
+        reply: {
+          text: '완료',
+        },
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(postSlackReplyForRequest).toHaveBeenCalledWith({
+      slackRequest: expect.objectContaining({
+        id: 'request-1',
+        processingStatus: 'RECEIVED',
+      }),
+      reply: {
+        text: '완료',
+      },
+      replaceOriginal: false,
+    });
+    expect(result).toEqual({
+      ok: true,
       slackRequestId: 'request-1',
     });
   });

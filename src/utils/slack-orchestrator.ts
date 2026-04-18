@@ -1,4 +1,5 @@
 import type {
+  ApplyDraftResult,
   CrmWriteDraft,
   SlackIntentClassification,
   SlackReply,
@@ -19,29 +20,46 @@ import {
   findSlackRequestById,
   updateSlackRequest,
 } from 'src/utils/slack-intake-service';
+import { applyThreadContextPatchToSlackRequest } from 'src/utils/slack-thread-context-service';
 import { postSlackReplyForRequest } from 'src/utils/slack-api';
 
 const nowIso = (): string => new Date().toISOString();
 
-const formatDecision = (decision: 'CREATE' | 'UPDATE' | 'SKIP'): string =>
-  decision === 'UPDATE' ? '기존 레코드 업데이트' : decision === 'SKIP' ? '반영 보류' : '신규 생성';
+const formatDecision = (
+  decision: 'CREATE' | 'UPDATE' | 'DELETE' | 'SKIP',
+): string =>
+  decision === 'UPDATE'
+    ? '기존 레코드 업데이트'
+    : decision === 'DELETE'
+      ? '기존 레코드 삭제'
+      : decision === 'SKIP'
+        ? '반영 보류'
+        : '신규 생성';
 
 const buildFallbackReview = (draft: CrmWriteDraft) => ({
   overview: draft.summary,
   opinion:
-    draft.warnings[0] ?? '승인 전에 생성/업데이트 대상과 필드를 한 번 더 확인하세요.',
+    draft.warnings[0] ??
+    '승인 전에 생성/수정/삭제 대상과 필드를 한 번 더 확인하세요.',
   items: draft.actions.map((action) => ({
     kind: action.kind,
-    decision: (action.operation === 'update' ? 'UPDATE' : 'CREATE') as
+    decision: (
+      action.operation === 'update'
+        ? 'UPDATE'
+        : action.operation === 'delete'
+          ? 'DELETE'
+          : 'CREATE'
+    ) as
       | 'UPDATE'
+      | 'DELETE'
       | 'CREATE',
     target:
       typeof action.data.title === 'string'
         ? action.data.title
         : typeof action.data.name === 'string'
           ? action.data.name
-          : action.lookup?.name ?? action.kind,
-    matchedRecord: action.lookup?.name ?? null,
+          : action.lookup?.name ?? action.lookup?.id ?? action.targetId ?? action.kind,
+    matchedRecord: action.lookup?.name ?? action.lookup?.id ?? action.targetId ?? null,
     reason: null,
     fields: Object.entries(action.data)
       .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
@@ -214,6 +232,35 @@ const extractStoredClassification = (
   const classification = toRecord(slackRequest.resultJson)?.classification;
 
   return classification ? (classification as SlackIntentClassification) : null;
+};
+
+const buildSelectedEntitiesFromApplyResult = (
+  applyResult: ApplyDraftResult,
+) => {
+  const companyIds = [
+    ...applyResult.created,
+    ...applyResult.updated,
+  ]
+    .filter((record) => record.kind === 'company')
+    .map((record) => record.id);
+  const personIds = [
+    ...applyResult.created,
+    ...applyResult.updated,
+  ]
+    .filter((record) => record.kind === 'person')
+    .map((record) => record.id);
+  const opportunityIds = [
+    ...applyResult.created,
+    ...applyResult.updated,
+  ]
+    .filter((record) => record.kind === 'opportunity')
+    .map((record) => record.id);
+
+  return {
+    ...(companyIds.length > 0 ? { companyIds } : {}),
+    ...(personIds.length > 0 ? { personIds } : {}),
+    ...(opportunityIds.length > 0 ? { opportunityIds } : {}),
+  };
 };
 
 const updateSlackRequestProgress = async ({
@@ -541,11 +588,26 @@ export const applyConfirmedSlackRequest = async (
       lastProcessedAt: nowIso(),
     },
   });
+  const replyText = `CRM 반영을 마쳤습니다. ${summarizeApplyResult(applyResult)}`;
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest: appliedRequest,
+    patch: {
+      assistantTurn: {
+        text: replyText,
+        outcome: 'applied',
+      },
+      summary: replyText,
+      selectedEntities: buildSelectedEntitiesFromApplyResult(applyResult),
+      lastQuerySnapshot: null,
+      pendingApproval: null,
+    },
+  });
 
   await postSlackReplyForRequest({
     slackRequest: appliedRequest,
     reply: {
-      text: `CRM 반영을 마쳤습니다. ${summarizeApplyResult(applyResult)}`,
+      text: replyText,
     },
   });
 
@@ -573,11 +635,26 @@ export const rejectSlackRequest = async ({
       lastProcessedAt: nowIso(),
     },
   });
+  const replyText = 'CRM 반영 요청을 취소했습니다.';
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest: rejectedRequest,
+    patch: {
+      assistantTurn: {
+        text: replyText,
+        outcome: 'rejected',
+      },
+      summary: replyText,
+      selectedEntities: {},
+      lastQuerySnapshot: null,
+      pendingApproval: null,
+    },
+  });
 
   await postSlackReplyForRequest({
     slackRequest: rejectedRequest,
     reply: {
-      text: 'CRM 반영 요청을 취소했습니다.',
+      text: replyText,
     },
   });
 
