@@ -1,5 +1,7 @@
 import { DEFAULT_ANTHROPIC_MODEL } from 'src/constants/slack-intake';
 import {
+  buildObjectQueryPlannerSystemPrompt,
+  buildObjectQueryPlannerUserPrompt,
   buildQueryPlannerSystemPrompt,
   buildQueryPlannerUserPrompt,
   buildQuerySynthesisSystemPrompt,
@@ -40,9 +42,14 @@ import {
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
 const ANTHROPIC_MAX_TOKENS = 1024;
-const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 4096;
+const ANTHROPIC_QUERY_REPLY_MAX_TOKENS = 2200;
 const ANTHROPIC_WRITE_DRAFT_MAX_TOKENS = 2048;
 const CRM_QUERY_PLAN_TOOL_NAME = 'plan_crm_query';
+const CRM_OBJECT_QUERY_PLAN_TOOL_NAME = 'plan_crm_object_query';
+const ANTHROPIC_CACHE_CONTROL = {
+  type: 'ephemeral',
+  ttl: '5m',
+} as const;
 
 type JsonSchema = Record<string, unknown>;
 
@@ -59,8 +66,76 @@ type AnthropicToolUseBlock = {
   input?: Record<string, unknown>;
 };
 
+type AnthropicUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
 type AnthropicMessageResponse = {
   content?: Array<AnthropicTextBlock | AnthropicToolUseBlock>;
+  usage?: AnthropicUsage;
+  error?: {
+    type?: string;
+    message?: string;
+  };
+};
+
+export type AnthropicInvocationDiagnostics = {
+  provider: 'anthropic';
+  operation: string;
+  attempted: boolean;
+  succeeded: boolean;
+  model: string | null;
+  status: number | null;
+  reason:
+    | 'missing_api_key'
+    | 'http_error'
+    | 'invalid_json'
+    | 'missing_tool_use'
+    | 'empty_response'
+    | 'insufficient_reply'
+    | 'timeout'
+    | 'skipped'
+    | null;
+  errorMessage: string | null;
+  cache: {
+    enabled: boolean;
+    type: 'ephemeral' | null;
+    ttl: string | null;
+  };
+  usage: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheCreationInputTokens: number | null;
+    cacheReadInputTokens: number | null;
+  } | null;
+};
+
+const ANTHROPIC_REQUEST_TIMEOUT_MS = 15_000;
+
+const fetchWithTimeout = async (
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+type AnthropicInvocationResult<TValue extends Record<string, unknown>> = {
+  data: TValue | null;
+  diagnostics: AnthropicInvocationDiagnostics;
 };
 
 type CrmReplySection = {
@@ -92,6 +167,31 @@ type PublicEnrichmentResponse = {
 };
 
 type MeetingFacts = ReturnType<typeof extractMeetingFacts>;
+
+export type DynamicObjectCatalogItem = {
+  id: string;
+  nameSingular: string;
+  namePlural: string;
+  labelSingular: string;
+  labelPlural: string;
+  description?: string | null;
+};
+
+export type DynamicObjectQueryPlan = {
+  handled: boolean;
+  confidence: number;
+  summary: string;
+  reportMode:
+    | 'PRIORITY_REPORT'
+    | 'STATUS_REPORT'
+    | 'SUMMARY_REPORT'
+    | 'LIST_REPORT';
+  targetObjectId?: string | null;
+  targetObjectNameSingular?: string | null;
+  targetObjectNamePlural?: string | null;
+  targetObjectLabelSingular?: string | null;
+  targetObjectLabelPlural?: string | null;
+};
 
 const SUPPORTED_WRITE_KINDS = [
   'company',
@@ -178,6 +278,7 @@ const crmQueryPlanSchema = {
         'MONTHLY_NEW',
         'OPPORTUNITY_STATUS',
         'RISK_REVIEW',
+        'LICENSE_PRIORITY',
         'PIPELINE_SUMMARY',
         'RECORD_LOOKUP',
         'GENERAL',
@@ -193,7 +294,15 @@ const crmQueryPlanSchema = {
     },
     focusEntity: {
       type: 'string',
-      enum: ['GENERAL', 'COMPANY', 'PERSON', 'OPPORTUNITY', 'TASK', 'NOTE'],
+      enum: [
+        'GENERAL',
+        'COMPANY',
+        'PERSON',
+        'LICENSE',
+        'OPPORTUNITY',
+        'TASK',
+        'NOTE',
+      ],
     },
     entityHints: {
       type: 'object',
@@ -229,6 +338,31 @@ const crmQueryPlanSchema = {
     'focusEntity',
     'entityHints',
   ],
+  additionalProperties: false,
+} as const satisfies JsonSchema;
+
+const dynamicObjectQueryPlanSchema = {
+  type: 'object',
+  properties: {
+    handled: { type: 'boolean' },
+    confidence: { type: 'number' },
+    summary: { type: 'string' },
+    reportMode: {
+      type: 'string',
+      enum: [
+        'PRIORITY_REPORT',
+        'STATUS_REPORT',
+        'SUMMARY_REPORT',
+        'LIST_REPORT',
+      ],
+    },
+    targetObjectId: { type: 'string' },
+    targetObjectNameSingular: { type: 'string' },
+    targetObjectNamePlural: { type: 'string' },
+    targetObjectLabelSingular: { type: 'string' },
+    targetObjectLabelPlural: { type: 'string' },
+  },
+  required: ['handled', 'confidence', 'summary', 'reportMode'],
   additionalProperties: false,
 } as const satisfies JsonSchema;
 
@@ -397,6 +531,21 @@ const determineFocusEntity = (
   entityHints: EntityHints,
 ): QueryFocusEntity => {
   if (
+    containsAny(normalized, [
+      '라이선스',
+      'license',
+      '갱신',
+      'renewal',
+      '만료',
+      'expiry',
+      'seat',
+      '좌석',
+    ])
+  ) {
+    return 'LICENSE';
+  }
+
+  if (
     entityHints.opportunities.length > 0 ||
     containsAny(normalized, ['영업기회', '기회', '딜', '파이프라인'])
   ) {
@@ -432,6 +581,12 @@ const buildFallbackClassification = (
 
   if (
     containsAny(normalized, [
+      '라이선스',
+      'license',
+      '갱신',
+      'renewal',
+      '만료',
+      'expiry',
       '이번달',
       '몇 건',
       '상태',
@@ -450,13 +605,22 @@ const buildFallbackClassification = (
         intentType: 'QUERY',
         confidence: 0.68,
         summary: 'CRM 조회 요청으로 분류했습니다.',
-      queryCategory: containsAny(normalized, ['이번달', '신규'])
-        ? 'MONTHLY_NEW'
-        : containsAny(normalized, ['리스크', '누락', '정체'])
-          ? 'RISK_REVIEW'
-          : containsAny(normalized, ['상태', '단계', '딜'])
-            ? 'OPPORTUNITY_STATUS'
-            : 'GENERAL',
+        queryCategory: containsAny(normalized, [
+          '라이선스',
+          'license',
+          '갱신',
+          'renewal',
+          '만료',
+          'expiry',
+        ])
+          ? 'LICENSE_PRIORITY'
+          : containsAny(normalized, ['이번달', '신규'])
+            ? 'MONTHLY_NEW'
+            : containsAny(normalized, ['리스크', '누락', '정체'])
+              ? 'RISK_REVIEW'
+              : containsAny(normalized, ['상태', '단계', '딜'])
+                ? 'OPPORTUNITY_STATUS'
+                : 'GENERAL',
         detailLevel: determineDetailLevel(normalized),
         timeframe: determineTimeframe(normalized),
         focusEntity: determineFocusEntity(normalized, entityHints),
@@ -1568,6 +1732,56 @@ const buildAnthropicThinkingConfig = (
       }
     : {};
 
+const buildAnthropicDiagnostics = ({
+  operation,
+  model,
+  attempted,
+  succeeded,
+  status = null,
+  reason = null,
+  errorMessage = null,
+  usage = null,
+}: {
+  operation: string;
+  model: string | null;
+  attempted: boolean;
+  succeeded: boolean;
+  status?: number | null;
+  reason?: AnthropicInvocationDiagnostics['reason'];
+  errorMessage?: string | null;
+  usage?: AnthropicUsage | null;
+}): AnthropicInvocationDiagnostics => ({
+  provider: 'anthropic',
+  operation,
+  attempted,
+  succeeded,
+  model,
+  status,
+  reason,
+  errorMessage,
+  cache: {
+    enabled: true,
+    type: ANTHROPIC_CACHE_CONTROL.type,
+    ttl: ANTHROPIC_CACHE_CONTROL.ttl,
+  },
+  usage: usage
+    ? {
+        inputTokens:
+          typeof usage.input_tokens === 'number' ? usage.input_tokens : null,
+        outputTokens:
+          typeof usage.output_tokens === 'number' ? usage.output_tokens : null,
+        cacheCreationInputTokens:
+          typeof usage.cache_creation_input_tokens === 'number'
+            ? usage.cache_creation_input_tokens
+            : null,
+        cacheReadInputTokens:
+          typeof usage.cache_read_input_tokens === 'number'
+            ? usage.cache_read_input_tokens
+            : null,
+      }
+    : null,
+});
+
 const parseAnthropicTextContent = <TResponse extends Record<string, unknown>>(
   payload: AnthropicMessageResponse,
 ): TResponse | null => {
@@ -1587,63 +1801,177 @@ const parseAnthropicTextContent = <TResponse extends Record<string, unknown>>(
   return null;
 };
 
-const callAnthropicStructuredJson = async <TResponse extends Record<string, unknown>>({
+const callAnthropicStructuredJsonWithDiagnostics = async <
+  TResponse extends Record<string, unknown>,
+>({
+  operation,
   systemPrompt,
   userPrompt,
   schema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
   effort = 'high',
   tools,
+  enableThinking = true,
 }: {
+  operation: string;
   systemPrompt: string;
   userPrompt: string;
   schema: JsonSchema;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
   tools?: AnthropicToolDefinition[];
-}): Promise<TResponse | null> => {
+  enableThinking?: boolean;
+}): Promise<AnthropicInvocationResult<TResponse>> => {
   const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
   if (!apiKey) {
-    return null;
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model: null,
+        attempted: false,
+        succeeded: false,
+        reason: 'missing_api_key',
+        errorMessage: 'ANTHROPIC_API_KEY is not configured',
+      }),
+    };
   }
 
   const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      ...buildAnthropicThinkingConfig(model),
-      output_config: {
-        effort,
-        format: {
-          type: 'json_schema',
-          schema,
-        },
-      },
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+  let response: Response;
 
-  if (!response.ok) {
-    return null;
+  try {
+    response = await fetchWithTimeout(
+      ANTHROPIC_MESSAGES_URL,
+      {
+        method: 'POST',
+        headers: buildAnthropicRequestHeaders(apiKey),
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          cache_control: ANTHROPIC_CACHE_CONTROL,
+          ...(enableThinking ? buildAnthropicThinkingConfig(model) : {}),
+          output_config: {
+            effort,
+            format: {
+              type: 'json_schema',
+              schema,
+            },
+          },
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+        }),
+      },
+      ANTHROPIC_REQUEST_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        error.message.toLowerCase().includes('aborted'))
+    ) {
+      return {
+        data: null,
+        diagnostics: buildAnthropicDiagnostics({
+          operation,
+          model,
+          attempted: true,
+          succeeded: false,
+          reason: 'timeout',
+          errorMessage: `Anthropic request timed out after ${ANTHROPIC_REQUEST_TIMEOUT_MS}ms`,
+        }),
+      };
+    }
+
+    throw error;
   }
 
-  return parseAnthropicTextContent<TResponse>(
-    (await response.json()) as AnthropicMessageResponse,
-  );
+  if (!response.ok) {
+    let errorMessage: string | null = null;
+
+    try {
+      const payload = (await response.json()) as AnthropicMessageResponse;
+      errorMessage = payload.error?.message ?? null;
+    } catch {
+      errorMessage = null;
+    }
+
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model,
+        attempted: true,
+        succeeded: false,
+        status: response.status,
+        reason: 'http_error',
+        errorMessage,
+      }),
+    };
+  }
+
+  const payload = (await response.json()) as AnthropicMessageResponse;
+  const parsed = parseAnthropicTextContent<TResponse>(payload);
+
+  if (!parsed) {
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model,
+        attempted: true,
+        succeeded: false,
+        status: response.status,
+        reason: 'invalid_json',
+        errorMessage: 'Anthropic response did not contain a parseable JSON text block',
+        usage: payload.usage ?? null,
+      }),
+    };
+  }
+
+  return {
+    data: parsed,
+    diagnostics: buildAnthropicDiagnostics({
+      operation,
+      model,
+      attempted: true,
+      succeeded: true,
+      status: response.status,
+      usage: payload.usage ?? null,
+    }),
+  };
 };
 
-const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
+const callAnthropicStructuredJson = async <
+  TResponse extends Record<string, unknown>,
+>(
+  args: {
+    operation: string;
+    systemPrompt: string;
+    userPrompt: string;
+    schema: JsonSchema;
+    maxTokens?: number;
+    effort?: 'low' | 'medium' | 'high';
+    tools?: AnthropicToolDefinition[];
+    enableThinking?: boolean;
+  },
+): Promise<TResponse | null> => {
+  const result = await callAnthropicStructuredJsonWithDiagnostics<TResponse>(args);
+
+  return result.data;
+};
+
+const callAnthropicToolInputWithDiagnostics = async <
+  TInput extends Record<string, unknown>,
+>({
+  operation,
   systemPrompt,
   userPrompt,
   toolName,
@@ -1651,7 +1979,9 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
   inputSchema,
   maxTokens = ANTHROPIC_MAX_TOKENS,
   effort = 'high',
+  enableThinking = true,
 }: {
+  operation: string;
   systemPrompt: string;
   userPrompt: string;
   toolName: string;
@@ -1659,44 +1989,104 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
   inputSchema: JsonSchema;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
-}): Promise<TInput | null> => {
+  enableThinking?: boolean;
+}): Promise<AnthropicInvocationResult<TInput>> => {
   const apiKey = getOptionalEnv('ANTHROPIC_API_KEY');
 
   if (!apiKey) {
-    return null;
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model: null,
+        attempted: false,
+        succeeded: false,
+        reason: 'missing_api_key',
+        errorMessage: 'ANTHROPIC_API_KEY is not configured',
+      }),
+    };
   }
 
   const model = getAnthropicModel() || DEFAULT_ANTHROPIC_MODEL;
-  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
-    method: 'POST',
-    headers: buildAnthropicRequestHeaders(apiKey),
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      ...buildAnthropicThinkingConfig(model),
-      output_config: {
-        effort,
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(
+      ANTHROPIC_MESSAGES_URL,
+      {
+        method: 'POST',
+        headers: buildAnthropicRequestHeaders(apiKey),
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          cache_control: ANTHROPIC_CACHE_CONTROL,
+          ...(enableThinking ? buildAnthropicThinkingConfig(model) : {}),
+          output_config: {
+            effort,
+          },
+          system: systemPrompt,
+          tools: [
+            {
+              name: toolName,
+              description: toolDescription,
+              strict: true,
+              input_schema: inputSchema,
+            },
+          ],
+          messages: [
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+        }),
       },
-      system: systemPrompt,
-      tools: [
-        {
-          name: toolName,
-          description: toolDescription,
-          strict: true,
-          input_schema: inputSchema,
-        },
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+      ANTHROPIC_REQUEST_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        error.message.toLowerCase().includes('aborted'))
+    ) {
+      return {
+        data: null,
+        diagnostics: buildAnthropicDiagnostics({
+          operation,
+          model,
+          attempted: true,
+          succeeded: false,
+          reason: 'timeout',
+          errorMessage: `Anthropic request timed out after ${ANTHROPIC_REQUEST_TIMEOUT_MS}ms`,
+        }),
+      };
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
-    return null;
+    let errorMessage: string | null = null;
+
+    try {
+      const payload = (await response.json()) as AnthropicMessageResponse;
+      errorMessage = payload.error?.message ?? null;
+    } catch {
+      errorMessage = null;
+    }
+
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model,
+        attempted: true,
+        succeeded: false,
+        status: response.status,
+        reason: 'http_error',
+        errorMessage,
+      }),
+    };
   }
 
   const payload = (await response.json()) as AnthropicMessageResponse;
@@ -1704,76 +2094,348 @@ const callAnthropicToolInput = async <TInput extends Record<string, unknown>>({
     (block) => block.type === 'tool_use' && (block as AnthropicToolUseBlock).name === toolName,
   ) as AnthropicToolUseBlock | undefined;
 
-  return toolUseBlock?.input ? (toolUseBlock.input as TInput) : null;
+  if (!toolUseBlock?.input) {
+    return {
+      data: null,
+      diagnostics: buildAnthropicDiagnostics({
+        operation,
+        model,
+        attempted: true,
+        succeeded: false,
+        status: response.status,
+        reason: 'missing_tool_use',
+        errorMessage: `Anthropic response did not include tool input for ${toolName}`,
+        usage: payload.usage ?? null,
+      }),
+    };
+  }
+
+  return {
+    data: toolUseBlock.input as TInput,
+    diagnostics: buildAnthropicDiagnostics({
+      operation,
+      model,
+      attempted: true,
+      succeeded: true,
+      status: response.status,
+      usage: payload.usage ?? null,
+    }),
+  };
+};
+
+const callAnthropicToolInput = async <TInput extends Record<string, unknown>>(
+  args: {
+    operation: string;
+    systemPrompt: string;
+    userPrompt: string;
+    toolName: string;
+    toolDescription: string;
+    inputSchema: JsonSchema;
+    maxTokens?: number;
+    effort?: 'low' | 'medium' | 'high';
+    enableThinking?: boolean;
+  },
+): Promise<TInput | null> => {
+  const result = await callAnthropicToolInputWithDiagnostics<TInput>(args);
+
+  return result.data;
+};
+
+export const classifySlackTextWithDiagnostics = async (
+  text: string,
+): Promise<{
+  classification: SlackIntentClassification;
+  aiDiagnostics: AnthropicInvocationDiagnostics;
+}> => {
+  const cleanedText = cleanSlackText(text);
+  const normalized = normalizeText(cleanedText);
+  const fallback = buildFallbackClassification(cleanedText);
+  const aiResult =
+    await callAnthropicToolInputWithDiagnostics<SlackIntentClassification>({
+      operation: 'query_classification',
+      systemPrompt: buildQueryPlannerSystemPrompt(),
+      toolName: CRM_QUERY_PLAN_TOOL_NAME,
+      toolDescription: 'Plan the CRM query intent and answer style.',
+      inputSchema: crmQueryPlanSchema,
+      userPrompt: buildQueryPlannerUserPrompt(cleanedText),
+      maxTokens: 256,
+      effort: 'low',
+      enableThinking: false,
+    });
+
+  if (!aiResult.data) {
+    return {
+      classification: fallback,
+      aiDiagnostics: aiResult.diagnostics,
+    };
+  }
+
+  return {
+    classification: {
+      ...fallback,
+      ...aiResult.data,
+      detailLevel:
+        aiResult.data.detailLevel === 'DETAILED'
+          ? 'DETAILED'
+          : fallback.detailLevel,
+      timeframe: mentionsThisMonth(normalized)
+        ? 'THIS_MONTH'
+        : mentionsRecent(normalized)
+          ? 'RECENT'
+          : 'ALL_TIME',
+      focusEntity:
+        aiResult.data.focusEntity === 'COMPANY' ||
+        aiResult.data.focusEntity === 'PERSON' ||
+        aiResult.data.focusEntity === 'LICENSE' ||
+        aiResult.data.focusEntity === 'OPPORTUNITY' ||
+        aiResult.data.focusEntity === 'TASK' ||
+        aiResult.data.focusEntity === 'NOTE'
+          ? aiResult.data.focusEntity
+          : fallback.focusEntity,
+      entityHints: {
+        companies: uniqueNonEmpty(aiResult.data.entityHints?.companies ?? []),
+        people: uniqueNonEmpty(aiResult.data.entityHints?.people ?? []),
+        opportunities: uniqueNonEmpty(
+          aiResult.data.entityHints?.opportunities ?? [],
+        ),
+        solutions: uniqueNonEmpty(aiResult.data.entityHints?.solutions ?? []),
+      },
+    },
+    aiDiagnostics: aiResult.diagnostics,
+  };
 };
 
 export const classifySlackText = async (
   text: string,
 ): Promise<SlackIntentClassification> => {
-  const cleanedText = cleanSlackText(text);
-  const normalized = normalizeText(cleanedText);
-  const fallback = buildFallbackClassification(cleanedText);
-  const aiResult = await callAnthropicToolInput<SlackIntentClassification>({
-    systemPrompt: buildQueryPlannerSystemPrompt(),
-    toolName: CRM_QUERY_PLAN_TOOL_NAME,
-    toolDescription: 'Plan the CRM query intent and answer style.',
-    inputSchema: crmQueryPlanSchema,
-    userPrompt: buildQueryPlannerUserPrompt(cleanedText),
-  });
+  const result = await classifySlackTextWithDiagnostics(text);
 
-  if (!aiResult) {
-    return fallback;
+  return result.classification;
+};
+
+export const planDynamicObjectQueryWithDiagnostics = async ({
+  text,
+  objectCatalog,
+}: {
+  text: string;
+  objectCatalog: DynamicObjectCatalogItem[];
+}): Promise<{
+  plan: DynamicObjectQueryPlan | null;
+  aiDiagnostics: AnthropicInvocationDiagnostics;
+}> => {
+  if (objectCatalog.length === 0) {
+    return {
+      plan: null,
+      aiDiagnostics: buildAnthropicDiagnostics({
+        operation: 'dynamic_object_planning',
+        model: null,
+        attempted: false,
+        succeeded: false,
+        reason: 'empty_response',
+        errorMessage: 'Object catalog was empty',
+      }),
+    };
+  }
+
+  const cleanedText = cleanSlackText(text);
+  const aiResult =
+    await callAnthropicToolInputWithDiagnostics<DynamicObjectQueryPlan>({
+      operation: 'dynamic_object_planning',
+      systemPrompt: buildObjectQueryPlannerSystemPrompt(),
+      toolName: CRM_OBJECT_QUERY_PLAN_TOOL_NAME,
+      toolDescription:
+        'Choose the best Twenty CRM object to query for this Slack request.',
+      inputSchema: dynamicObjectQueryPlanSchema,
+      userPrompt: buildObjectQueryPlannerUserPrompt({
+        cleanedText,
+        objectCatalog,
+      }),
+      maxTokens: 256,
+      effort: 'low',
+      enableThinking: false,
+    });
+
+  if (!aiResult.data) {
+    return {
+      plan: null,
+      aiDiagnostics: aiResult.diagnostics,
+    };
   }
 
   return {
-    ...fallback,
-    ...aiResult,
-    detailLevel:
-      aiResult.detailLevel === 'DETAILED' ? 'DETAILED' : fallback.detailLevel,
-    timeframe: mentionsThisMonth(normalized)
-      ? 'THIS_MONTH'
-      : mentionsRecent(normalized)
-        ? 'RECENT'
-        : 'ALL_TIME',
-    focusEntity:
-      aiResult.focusEntity === 'COMPANY' ||
-      aiResult.focusEntity === 'PERSON' ||
-      aiResult.focusEntity === 'OPPORTUNITY' ||
-      aiResult.focusEntity === 'TASK' ||
-      aiResult.focusEntity === 'NOTE'
-        ? aiResult.focusEntity
-        : fallback.focusEntity,
-    entityHints: {
-      companies: uniqueNonEmpty(aiResult.entityHints?.companies ?? []),
-      people: uniqueNonEmpty(aiResult.entityHints?.people ?? []),
-      opportunities: uniqueNonEmpty(aiResult.entityHints?.opportunities ?? []),
-      solutions: uniqueNonEmpty(aiResult.entityHints?.solutions ?? []),
+    plan: {
+      handled: Boolean(aiResult.data.handled),
+      confidence:
+        typeof aiResult.data.confidence === 'number'
+          ? aiResult.data.confidence
+          : 0.5,
+      summary:
+        typeof aiResult.data.summary === 'string'
+          ? aiResult.data.summary
+          : '동적 객체 질의 계획을 만들었습니다.',
+      reportMode:
+        aiResult.data.reportMode === 'PRIORITY_REPORT' ||
+        aiResult.data.reportMode === 'STATUS_REPORT' ||
+        aiResult.data.reportMode === 'SUMMARY_REPORT' ||
+        aiResult.data.reportMode === 'LIST_REPORT'
+          ? aiResult.data.reportMode
+          : 'SUMMARY_REPORT',
+      targetObjectId:
+        typeof aiResult.data.targetObjectId === 'string'
+          ? aiResult.data.targetObjectId
+          : null,
+      targetObjectNameSingular:
+        typeof aiResult.data.targetObjectNameSingular === 'string'
+          ? aiResult.data.targetObjectNameSingular
+          : null,
+      targetObjectNamePlural:
+        typeof aiResult.data.targetObjectNamePlural === 'string'
+          ? aiResult.data.targetObjectNamePlural
+          : null,
+      targetObjectLabelSingular:
+        typeof aiResult.data.targetObjectLabelSingular === 'string'
+          ? aiResult.data.targetObjectLabelSingular
+          : null,
+      targetObjectLabelPlural:
+        typeof aiResult.data.targetObjectLabelPlural === 'string'
+          ? aiResult.data.targetObjectLabelPlural
+          : null,
     },
+    aiDiagnostics: aiResult.diagnostics,
   };
+};
+
+export const planDynamicObjectQuery = async ({
+  text,
+  objectCatalog,
+}: {
+  text: string;
+  objectCatalog: DynamicObjectCatalogItem[];
+}): Promise<DynamicObjectQueryPlan | null> => {
+  const result = await planDynamicObjectQueryWithDiagnostics({
+    text,
+    objectCatalog,
+  });
+
+  return result.plan;
 };
 
 const buildSlackReplyFromSections = (
   response: SynthesizedCrmReply,
-): SlackReply => ({
-  text: cleanSlackText(response.text, { singleLine: true }),
-  blocks: response.sections
-    .filter(
-      (section) =>
-        typeof section.title === 'string' &&
-        section.title.trim().length > 0 &&
-        typeof section.body === 'string' &&
-        section.body.trim().length > 0,
-    )
-    .map((section) => ({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text:
-          `*${cleanSlackText(section.title, { singleLine: true })}*\n` +
-          cleanSlackText(section.body),
-      },
-    })),
-});
+): SlackReply => {
+  const splitSlackBody = (body: string, maxLength = 2800): string[] => {
+    if (body.length <= maxLength) {
+      return [body];
+    }
+
+    const paragraphs = body.split('\n\n');
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const paragraph of paragraphs) {
+      const candidate = current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+
+      if (candidate.length <= maxLength) {
+        current = candidate;
+        continue;
+      }
+
+      if (current.length > 0) {
+        chunks.push(current);
+        current = '';
+      }
+
+      if (paragraph.length <= maxLength) {
+        current = paragraph;
+        continue;
+      }
+
+      const lines = paragraph.split('\n');
+      let lineChunk = '';
+
+      for (const line of lines) {
+        const lineCandidate =
+          lineChunk.length === 0 ? line : `${lineChunk}\n${line}`;
+
+        if (lineCandidate.length <= maxLength) {
+          lineChunk = lineCandidate;
+          continue;
+        }
+
+        if (lineChunk.length > 0) {
+          chunks.push(lineChunk);
+        }
+
+        lineChunk = line;
+      }
+
+      current = lineChunk;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current);
+    }
+
+    return chunks;
+  };
+
+  return {
+    text: cleanSlackText(response.text, { singleLine: true }),
+    blocks: response.sections
+      .filter(
+        (section) =>
+          typeof section.title === 'string' &&
+          section.title.trim().length > 0 &&
+          typeof section.body === 'string' &&
+          section.body.trim().length > 0,
+      )
+      .flatMap((section) =>
+        splitSlackBody(cleanSlackText(section.body)).map((bodyChunk, index) => ({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `*${cleanSlackText(section.title, { singleLine: true })}${index === 0 ? '' : ' (계속)'}*\n` +
+              bodyChunk,
+          },
+        })),
+      ),
+  };
+};
+
+export const synthesizeCrmQueryReplyWithDiagnostics = async ({
+  requestText,
+  classification,
+  crmContext,
+}: {
+  requestText: string;
+  classification: SlackIntentClassification;
+  crmContext: Record<string, unknown>;
+}): Promise<{
+  reply: SlackReply | null;
+  aiDiagnostics: AnthropicInvocationDiagnostics;
+}> => {
+  const cleanedText = cleanSlackText(requestText);
+  const response =
+    await callAnthropicStructuredJsonWithDiagnostics<SynthesizedCrmReply>({
+      operation: 'query_synthesis',
+      systemPrompt: buildQuerySynthesisSystemPrompt(),
+      schema: crmReplySchema,
+      maxTokens: ANTHROPIC_QUERY_REPLY_MAX_TOKENS,
+      effort: 'medium',
+      enableThinking: false,
+      userPrompt: buildQuerySynthesisUserPrompt({
+        cleanedText,
+        classification,
+        crmContext,
+      }),
+    });
+
+  return {
+    reply: response.data ? buildSlackReplyFromSections(response.data) : null,
+    aiDiagnostics: response.diagnostics,
+  };
+};
 
 export const synthesizeCrmQueryReply = async ({
   requestText,
@@ -1784,30 +2446,21 @@ export const synthesizeCrmQueryReply = async ({
   classification: SlackIntentClassification;
   crmContext: Record<string, unknown>;
 }): Promise<SlackReply | null> => {
-  const cleanedText = cleanSlackText(requestText);
-  const response = await callAnthropicStructuredJson<SynthesizedCrmReply>({
-    systemPrompt: buildQuerySynthesisSystemPrompt(),
-    schema: crmReplySchema,
-    maxTokens: ANTHROPIC_QUERY_REPLY_MAX_TOKENS,
-    effort: 'high',
-    tools: [buildWebSearchTool()],
-    userPrompt: buildQuerySynthesisUserPrompt({
-      cleanedText,
-      classification,
-      crmContext,
-    }),
+  const result = await synthesizeCrmQueryReplyWithDiagnostics({
+    requestText,
+    classification,
+    crmContext,
   });
 
-  if (!response) {
-    return null;
-  }
-
-  return buildSlackReplyFromSections(response);
+  return result.reply;
 };
 
-export const buildCrmWriteDraft = async (
+export const buildCrmWriteDraftWithDiagnostics = async (
   text: string,
-): Promise<CrmWriteDraft> => {
+): Promise<{
+  draft: CrmWriteDraft;
+  aiDiagnostics: AnthropicInvocationDiagnostics;
+}> => {
   const cleanedText = cleanSlackText(text);
   const fallback = buildFallbackDraft(cleanedText);
   const meetingFacts = extractMeetingFacts(cleanedText);
@@ -1815,52 +2468,59 @@ export const buildCrmWriteDraft = async (
     text: cleanedText,
     entityHints: extractEntityHints(cleanedText),
   });
-  const aiResult = await callAnthropicStructuredJson<StructuredCrmWriteDraft>({
-    systemPrompt: buildWriteDraftSystemPrompt(),
-    userPrompt: buildWriteDraftUserPrompt({
-      cleanedText,
-      candidateContext,
-      meetingFacts,
-    }),
-    schema: crmWriteDraftSchema,
-    maxTokens: ANTHROPIC_WRITE_DRAFT_MAX_TOKENS,
-    effort: 'high',
-  });
-
-  if (!aiResult) {
-    return enrichDraftWithPublicContext({
-      draft: fillMissingActionsFromMeetingFacts({
-        draft: fallback,
-        sourceText: cleanedText,
+  const aiResult =
+    await callAnthropicStructuredJsonWithDiagnostics<StructuredCrmWriteDraft>({
+      operation: 'write_draft',
+      systemPrompt: buildWriteDraftSystemPrompt(),
+      userPrompt: buildWriteDraftUserPrompt({
+        cleanedText,
         candidateContext,
+        meetingFacts,
       }),
-      sourceText: cleanedText,
+      schema: crmWriteDraftSchema,
+      maxTokens: ANTHROPIC_WRITE_DRAFT_MAX_TOKENS,
+      effort: 'high',
     });
+
+  if (!aiResult.data) {
+    return {
+      draft: await enrichDraftWithPublicContext({
+        draft: fillMissingActionsFromMeetingFacts({
+          draft: fallback,
+          sourceText: cleanedText,
+          candidateContext,
+        }),
+        sourceText: cleanedText,
+      }),
+      aiDiagnostics: aiResult.diagnostics,
+    };
   }
 
   const sanitizedDraft = sanitizeDraft(
     {
       summary:
-        typeof aiResult.summary === 'string'
-          ? aiResult.summary
+        typeof aiResult.data.summary === 'string'
+          ? aiResult.data.summary
           : fallback.summary,
       confidence:
-        typeof aiResult.confidence === 'number'
-          ? aiResult.confidence
+        typeof aiResult.data.confidence === 'number'
+          ? aiResult.data.confidence
           : fallback.confidence,
       sourceText:
-        typeof aiResult.sourceText === 'string'
-          ? aiResult.sourceText
+        typeof aiResult.data.sourceText === 'string'
+          ? aiResult.data.sourceText
           : cleanedText,
-      actions: Array.isArray(aiResult.actions) ? aiResult.actions : fallback.actions,
-      warnings: Array.isArray(aiResult.warnings)
-        ? aiResult.warnings.filter(
+      actions: Array.isArray(aiResult.data.actions)
+        ? aiResult.data.actions
+        : fallback.actions,
+      warnings: Array.isArray(aiResult.data.warnings)
+        ? aiResult.data.warnings.filter(
             (warning): warning is string => typeof warning === 'string',
           )
         : fallback.warnings,
       review:
-        aiResult.review && typeof aiResult.review === 'object'
-          ? (aiResult.review as CrmWriteReview)
+        aiResult.data.review && typeof aiResult.data.review === 'object'
+          ? (aiResult.data.review as CrmWriteReview)
           : fallback.review,
     },
     cleanedText,
@@ -1871,8 +2531,19 @@ export const buildCrmWriteDraft = async (
     candidateContext,
   });
 
-  return enrichDraftWithPublicContext({
-    draft: groundedDraft,
-    sourceText: cleanedText,
-  });
+  return {
+    draft: await enrichDraftWithPublicContext({
+      draft: groundedDraft,
+      sourceText: cleanedText,
+    }),
+    aiDiagnostics: aiResult.diagnostics,
+  };
+};
+
+export const buildCrmWriteDraft = async (
+  text: string,
+): Promise<CrmWriteDraft> => {
+  const result = await buildCrmWriteDraftWithDiagnostics(text);
+
+  return result.draft;
 };

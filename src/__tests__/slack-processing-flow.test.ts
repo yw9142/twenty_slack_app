@@ -4,6 +4,7 @@ const {
   createOrLoadSlackRequest,
   processSlackRequest,
   processSlackRequestById,
+  processClassifiedSlackRequestById,
   confirmSlackRequest,
   applyConfirmedSlackRequest,
   approveSlackRequest,
@@ -13,6 +14,7 @@ const {
   createOrLoadSlackRequest: vi.fn(),
   processSlackRequest: vi.fn(),
   processSlackRequestById: vi.fn(),
+  processClassifiedSlackRequestById: vi.fn(),
   confirmSlackRequest: vi.fn(),
   applyConfirmedSlackRequest: vi.fn(),
   approveSlackRequest: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock('src/utils/slack-intake-service', () => ({
 vi.mock('src/utils/slack-orchestrator', () => ({
   processSlackRequest,
   processSlackRequestById,
+  processClassifiedSlackRequestById,
   confirmSlackRequest,
   applyConfirmedSlackRequest,
   approveSlackRequest,
@@ -44,6 +47,7 @@ vi.mock('src/utils/slack-orchestrator', () => ({
 }));
 
 import applyApprovedDraftFunction from 'src/logic-functions/apply-approved-draft.function';
+import continueClassifiedSlackRequestFunction from 'src/logic-functions/continue-classified-slack-request.function';
 import processSlackIntakeFunction from 'src/logic-functions/process-slack-intake.function';
 import {
   handleSlackCommandsRoute,
@@ -67,6 +71,10 @@ describe('slack processing flow', () => {
       processingStatus: 'REJECTED',
     });
     processSlackRequestById.mockResolvedValue({
+      id: 'request-1',
+      processingStatus: 'ANSWERED',
+    });
+    processClassifiedSlackRequestById.mockResolvedValue({
       id: 'request-1',
       processingStatus: 'ANSWERED',
     });
@@ -153,6 +161,47 @@ describe('slack processing flow', () => {
     expect(processSlackRequestById).toHaveBeenCalledWith('request-1');
     expect(result).toEqual({
       processingStatus: 'ANSWERED',
+      slackRequestId: 'request-1',
+    });
+  });
+
+  it('continues classified requests from the updated-status trigger', async () => {
+    const handler = continueClassifiedSlackRequestFunction.config.handler as (
+      payload: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+
+    const skippedResult = await handler({
+      recordId: 'request-1',
+      properties: {
+        after: {
+          processingStatus: 'ANSWERED',
+        },
+      },
+    });
+
+    expect(skippedResult).toEqual({
+      processingStatus: 'ANSWERED',
+      skipped: true,
+      slackRequestId: 'request-1',
+    });
+    expect(processClassifiedSlackRequestById).not.toHaveBeenCalled();
+
+    const continuedResult = await handler({
+      recordId: 'request-1',
+      properties: {
+        after: {
+          processingStatus: 'CLASSIFIED',
+        },
+      },
+    });
+
+    expect(
+      continueClassifiedSlackRequestFunction.config.databaseEventTriggerSettings,
+    ).toBeUndefined();
+    expect(processClassifiedSlackRequestById).toHaveBeenCalledWith('request-1');
+    expect(continuedResult).toEqual({
+      processingStatus: 'ANSWERED',
+      resultJson: undefined,
       slackRequestId: 'request-1',
     });
   });

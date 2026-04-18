@@ -82,8 +82,12 @@ describe('intelligence fallbacks', () => {
 
     expect(body).toMatchObject({
       model: 'claude-test-model',
+      cache_control: {
+        type: 'ephemeral',
+        ttl: '5m',
+      },
       output_config: {
-        effort: 'high',
+        effort: 'low',
       },
       tools: [
         expect.objectContaining({
@@ -98,6 +102,7 @@ describe('intelligence fallbacks', () => {
         },
       ],
     });
+    expect(body).not.toHaveProperty('thinking');
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Planning Strategy');
     expect(body?.system).toContain('## Intent Classification Rules');
@@ -290,20 +295,13 @@ describe('intelligence fallbacks', () => {
         : null;
 
     expect(body?.output_config?.format?.type).toBe('json_schema');
-    expect(body?.output_config?.effort).toBe('high');
-    expect(body?.thinking).toMatchObject({
-      type: 'adaptive',
-      display: 'omitted',
+    expect(body?.cache_control).toMatchObject({
+      type: 'ephemeral',
+      ttl: '5m',
     });
-    expect(body?.tools).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'web_search_20250305',
-          name: 'web_search',
-          max_uses: 2,
-        }),
-      ]),
-    );
+    expect(body?.output_config?.effort).toBe('medium');
+    expect(body?.thinking).toBeUndefined();
+    expect(body?.tools).toBeUndefined();
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Slack Reply Contract');
     expect(body?.system).toContain('## Optional Web Search');

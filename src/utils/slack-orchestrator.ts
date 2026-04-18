@@ -1,4 +1,9 @@
-import type { CrmWriteDraft, SlackReply, SlackRequestRecord } from 'src/types/slack-agent';
+import type {
+  CrmWriteDraft,
+  SlackIntentClassification,
+  SlackReply,
+  SlackRequestRecord,
+} from 'src/types/slack-agent';
 import { answerCrmQuery } from 'src/utils/crm-query';
 import {
   applyApprovedDraft,
@@ -7,8 +12,8 @@ import {
   summarizeApplyResult,
 } from 'src/utils/crm-write';
 import {
-  buildCrmWriteDraft,
-  classifySlackText,
+  buildCrmWriteDraftWithDiagnostics,
+  classifySlackTextWithDiagnostics,
 } from 'src/utils/intelligence';
 import {
   findSlackRequestById,
@@ -160,6 +165,80 @@ const notifyOperations = async ({
   });
 };
 
+const toRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const mergeSlackRequestResultJson = ({
+  current,
+  patch,
+}: {
+  current: Record<string, unknown> | null;
+  patch: Record<string, unknown>;
+}): Record<string, unknown> => {
+  const currentRecord = toRecord(current) ?? {};
+  const patchRecord = toRecord(patch) ?? {};
+  const currentAiDiagnostics = toRecord(currentRecord.aiDiagnostics);
+  const patchAiDiagnostics = toRecord(patchRecord.aiDiagnostics);
+
+  return {
+    ...currentRecord,
+    ...patchRecord,
+    ...(currentAiDiagnostics || patchAiDiagnostics
+      ? {
+          aiDiagnostics: {
+            ...(currentAiDiagnostics ?? {}),
+            ...(patchAiDiagnostics ?? {}),
+          },
+        }
+      : {}),
+  };
+};
+
+const buildProcessingTrace = ({
+  stage,
+  details,
+}: {
+  stage: string;
+  details?: Record<string, unknown>;
+}) => ({
+  stage,
+  updatedAt: nowIso(),
+  ...(details ? { details } : {}),
+});
+
+const extractStoredClassification = (
+  slackRequest: SlackRequestRecord,
+): SlackIntentClassification | null => {
+  const classification = toRecord(slackRequest.resultJson)?.classification;
+
+  return classification ? (classification as SlackIntentClassification) : null;
+};
+
+const updateSlackRequestProgress = async ({
+  slackRequest,
+  stage,
+  resultJsonPatch,
+}: {
+  slackRequest: SlackRequestRecord;
+  stage: string;
+  resultJsonPatch?: Record<string, unknown>;
+}): Promise<SlackRequestRecord> =>
+  updateSlackRequest({
+    id: slackRequest.id,
+    data: {
+      resultJson: mergeSlackRequestResultJson({
+        current: slackRequest.resultJson,
+        patch: {
+          ...(resultJsonPatch ?? {}),
+          processingTrace: buildProcessingTrace({ stage }),
+        },
+      }),
+      lastProcessedAt: nowIso(),
+    },
+  });
+
 const setSlackRequestError = async ({
   slackRequest,
   error,
@@ -172,6 +251,17 @@ const setSlackRequestError = async ({
     data: {
       processingStatus: 'ERROR',
       errorMessage: error.message,
+      resultJson: mergeSlackRequestResultJson({
+        current: slackRequest.resultJson,
+        patch: {
+          processingTrace: buildProcessingTrace({
+            stage: 'ERROR',
+            details: {
+              errorMessage: error.message,
+            },
+          }),
+        },
+      }),
       lastProcessedAt: nowIso(),
     },
   });
@@ -185,11 +275,14 @@ const setSlackRequestError = async ({
 export const processSlackRequest = async (
   slackRequest: SlackRequestRecord,
 ): Promise<SlackRequestRecord> => {
+  let currentRequest = slackRequest;
+
   try {
     const requestText =
       slackRequest.normalizedText ?? slackRequest.rawText ?? '';
-    const classification = await classifySlackText(requestText);
-    await updateSlackRequest({
+    const classified = await classifySlackTextWithDiagnostics(requestText);
+    const classification = classified.classification;
+    const classifiedRequest = await updateSlackRequest({
       id: slackRequest.id,
       data: {
         intentType: classification.intentType,
@@ -197,57 +290,23 @@ export const processSlackRequest = async (
         processingStatus: 'CLASSIFIED',
         resultJson: {
           classification,
+          aiDiagnostics: {
+            classification: classified.aiDiagnostics,
+          },
+          processingTrace: buildProcessingTrace({
+            stage: 'CLASSIFICATION_DONE',
+          }),
         },
         lastProcessedAt: nowIso(),
       },
     });
+    currentRequest = classifiedRequest;
 
-    if (classification.intentType === 'QUERY') {
-      const answer = await answerCrmQuery({
-        classification,
-        text: requestText,
-      });
-
-      const answeredRequest = await updateSlackRequest({
-        id: slackRequest.id,
-        data: {
-          processingStatus: 'ANSWERED',
-          resultJson: answer.resultJson,
-          lastProcessedAt: nowIso(),
-        },
-      });
-
-      await postSlackReplyForRequest({
-        slackRequest: answeredRequest,
-        reply: answer.reply,
-      });
-
-      return answeredRequest;
-    }
-
-    if (classification.intentType === 'WRITE_DRAFT') {
-      const draft = await buildCrmWriteDraft(requestText);
-      const draftedRequest = await updateSlackRequest({
-        id: slackRequest.id,
-        data: {
-          processingStatus: 'AWAITING_CONFIRMATION',
-          draftJson: draft,
-          resultJson: {
-            classification,
-          },
-          lastProcessedAt: nowIso(),
-        },
-      });
-
-      await postSlackReplyForRequest({
-        slackRequest: draftedRequest,
-        reply: buildApprovalReply({
-          slackRequestId: draftedRequest.id,
-          draft,
-        }),
-      });
-
-      return draftedRequest;
+    if (
+      classification.intentType === 'QUERY' ||
+      classification.intentType === 'WRITE_DRAFT'
+    ) {
+      return processClassifiedSlackRequest(classifiedRequest);
     }
 
     const unknownRequest = await updateSlackRequest({
@@ -271,7 +330,7 @@ export const processSlackRequest = async (
     const typedError =
       error instanceof Error ? error : new Error('Unknown Slack processing error');
     await setSlackRequestError({
-      slackRequest,
+      slackRequest: currentRequest,
       error: typedError,
     });
     throw typedError;
@@ -288,6 +347,128 @@ export const processSlackRequestById = async (
   }
 
   return processSlackRequest(slackRequest);
+};
+
+export const processClassifiedSlackRequest = async (
+  slackRequest: SlackRequestRecord,
+): Promise<SlackRequestRecord> => {
+  let currentRequest = slackRequest;
+
+  try {
+    const requestText =
+      slackRequest.normalizedText ?? slackRequest.rawText ?? '';
+    const classification = extractStoredClassification(slackRequest);
+
+    if (!classification) {
+      throw new Error('분류 결과가 없어 후속 처리를 진행할 수 없습니다.');
+    }
+
+    if (classification.intentType === 'QUERY') {
+      let startedRequest = await updateSlackRequestProgress({
+        slackRequest,
+        stage: 'QUERY_STARTED',
+      });
+      currentRequest = startedRequest;
+      const answer = await answerCrmQuery({
+        classification,
+        text: requestText,
+        onProgress: async (stage) => {
+          startedRequest = await updateSlackRequestProgress({
+            slackRequest: startedRequest,
+            stage,
+          });
+          currentRequest = startedRequest;
+        },
+      });
+
+      const answeredRequest = await updateSlackRequest({
+        id: startedRequest.id,
+        data: {
+          processingStatus: 'ANSWERED',
+          resultJson: mergeSlackRequestResultJson({
+            current: startedRequest.resultJson,
+            patch: {
+              classification,
+              ...(answer.resultJson ?? {}),
+              processingTrace: buildProcessingTrace({
+                stage: 'QUERY_COMPLETED',
+              }),
+            },
+          }),
+          lastProcessedAt: nowIso(),
+        },
+      });
+
+      await postSlackReplyForRequest({
+        slackRequest: answeredRequest,
+        reply: answer.reply,
+      });
+
+      return answeredRequest;
+    }
+
+    if (classification.intentType === 'WRITE_DRAFT') {
+      const startedRequest = await updateSlackRequestProgress({
+        slackRequest,
+        stage: 'WRITE_DRAFT_STARTED',
+      });
+      currentRequest = startedRequest;
+      const drafted = await buildCrmWriteDraftWithDiagnostics(requestText);
+      const draft = drafted.draft;
+      const draftedRequest = await updateSlackRequest({
+        id: startedRequest.id,
+        data: {
+          processingStatus: 'AWAITING_CONFIRMATION',
+          draftJson: draft,
+          resultJson: mergeSlackRequestResultJson({
+            current: startedRequest.resultJson,
+            patch: {
+              classification,
+              aiDiagnostics: {
+                writeDraft: drafted.aiDiagnostics,
+              },
+              processingTrace: buildProcessingTrace({
+                stage: 'WRITE_DRAFT_COMPLETED',
+              }),
+            },
+          }),
+          lastProcessedAt: nowIso(),
+        },
+      });
+
+      await postSlackReplyForRequest({
+        slackRequest: draftedRequest,
+        reply: buildApprovalReply({
+          slackRequestId: draftedRequest.id,
+          draft,
+        }),
+      });
+
+      return draftedRequest;
+    }
+
+    return slackRequest;
+  } catch (error) {
+    const typedError =
+      error instanceof Error ? error : new Error('Unknown Slack continuation error');
+    await setSlackRequestError({
+      slackRequest: currentRequest,
+      error: typedError,
+    });
+    throw typedError;
+  }
+};
+
+export const processClassifiedSlackRequestById = async (
+  slackRequestId: string,
+): Promise<SlackRequestRecord> => {
+  const slackRequest = await findSlackRequestById(slackRequestId);
+
+  if (!slackRequest) {
+    throw new Error(`Slack 요청 ${slackRequestId}를 찾지 못했습니다.`);
+  }
+
+  return processClassifiedSlackRequest(slackRequest);
 };
 
 export const approveSlackRequest = async ({

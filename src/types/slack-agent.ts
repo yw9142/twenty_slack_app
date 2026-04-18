@@ -28,6 +28,7 @@ export type QueryCategory =
   | 'MONTHLY_NEW'
   | 'OPPORTUNITY_STATUS'
   | 'RISK_REVIEW'
+  | 'LICENSE_PRIORITY'
   | 'PIPELINE_SUMMARY'
   | 'RECORD_LOOKUP'
   | 'GENERAL';
@@ -40,6 +41,7 @@ export type QueryFocusEntity =
   | 'GENERAL'
   | 'COMPANY'
   | 'PERSON'
+  | 'LICENSE'
   | 'OPPORTUNITY'
   | 'TASK'
   | 'NOTE';
@@ -157,6 +159,33 @@ export type BasicOpportunityRecord = {
   pointOfContactName?: string | null;
   amountMicros?: number | null;
   currencyCode?: string | null;
+};
+
+export type BasicLicenseRecord = {
+  id: string;
+  name: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  licenseType?: string | null;
+  vendorName?: string | null;
+  productName?: string | null;
+  expiryDate?: string | null;
+  startDate?: string | null;
+  seatCount?: number | null;
+  contractValueMicros?: number | null;
+  currencyCode?: string | null;
+  renewalStage?: string | null;
+  renewalRiskLevel?: string | null;
+  lastActivityAt?: string | null;
+  nextContactDueAt?: string | null;
+  autoRenewal?: boolean | null;
+  notesSummary?: string | null;
+  vendorCompanyName?: string | null;
+  partnerCompanyName?: string | null;
+  endCustomerCompanyName?: string | null;
+  solutionName?: string | null;
+  renewalOpportunityName?: string | null;
+  renewalOpportunityStage?: string | null;
 };
 
 export type BasicTaskRecord = {
