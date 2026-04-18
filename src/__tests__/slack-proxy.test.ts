@@ -1379,4 +1379,63 @@ describe('slack proxy runner', () => {
       expect.anything(),
     );
   });
+
+  it('accepts final decisions without an explicit kind when mode is provided', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+
+    const result = await processSlackRequestWithCodex({
+      slackRequestId: 'request-kindless-final',
+      toolClient: buildToolClient(toolCalls),
+      runCodexDecision: vi
+        .fn()
+        .mockResolvedValueOnce({
+          kind: 'tool_call',
+          toolName: 'search-opportunities',
+          input: {
+            query: '미래금융',
+          },
+        })
+        .mockResolvedValueOnce({
+          mode: 'query',
+          message: '미래금융 관련 영업기회를 정리했습니다.',
+          threadContextPatch: {
+            assistantTurn: {
+              text: '미래금융 관련 영업기회를 정리했습니다.',
+              outcome: 'query',
+            },
+            summary: '미래금융 영업기회 조회를 마쳤다.',
+            selectedEntities: {
+              opportunityIds: ['opportunity-1'],
+            },
+            lastQuerySnapshot: {
+              requestId: 'request-kindless-final',
+              items: [
+                {
+                  id: 'opportunity-1',
+                  kind: 'opportunity',
+                  label: '미래금융 VDI',
+                  order: 0,
+                },
+              ],
+            },
+            pendingApproval: null,
+          },
+        }),
+    });
+
+    expect(result).toEqual({
+      kind: 'query',
+      slackRequestId: 'request-kindless-final',
+      answer: '미래금융 관련 영업기회를 정리했습니다.',
+    });
+    expect(toolCalls).toContainEqual([
+      'save-query-answer',
+      expect.objectContaining({
+        slackRequestId: 'request-kindless-final',
+        reply: {
+          text: '미래금융 관련 영업기회를 정리했습니다.',
+        },
+      }),
+    ]);
+  });
 });

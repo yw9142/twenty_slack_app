@@ -43,7 +43,25 @@ const parseDecisionJson = (value) => {
   return JSON.parse(rawValue);
 };
 
+const summarizeUnsupportedDecision = (decision) => {
+  if (Array.isArray(decision)) {
+    return `array(length=${decision.length})`;
+  }
+
+  if (!decision || typeof decision !== 'object') {
+    return typeof decision;
+  }
+
+  const keys = Object.keys(decision).slice(0, 8);
+
+  return `object(keys=${keys.join(',')})`;
+};
+
 const normalizeDecision = (decision) => {
+  if (Array.isArray(decision) && decision.length === 1) {
+    return normalizeDecision(decision[0]);
+  }
+
   if (!decision || typeof decision !== 'object') {
     throw new Error('Codex returned an empty decision');
   }
@@ -116,6 +134,17 @@ const normalizeDecision = (decision) => {
   }
 
   if (
+    decision.mode === 'query' ||
+    decision.mode === 'write_draft' ||
+    decision.mode === 'applied'
+  ) {
+    return normalizeDecision({
+      kind: 'final',
+      ...decision,
+    });
+  }
+
+  if (
     typeof decision.toolName === 'string' ||
     typeof decision.endpoint === 'string' ||
     typeof decision.tool === 'string'
@@ -127,7 +156,9 @@ const normalizeDecision = (decision) => {
     });
   }
 
-  throw new Error('Codex returned an unsupported decision shape');
+  throw new Error(
+    `Codex returned an unsupported decision shape: ${summarizeUnsupportedDecision(decision)}`,
+  );
 };
 
 export const buildCodexPrompt = ({
