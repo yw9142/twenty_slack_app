@@ -268,6 +268,31 @@ describe('codex tools', () => {
     });
   });
 
+  it('rejects approval drafts without grounded actions', async () => {
+    const result = await handleSaveWriteDraftRoute({
+      body: {
+        slackRequestId: 'request-1',
+        draft: {
+          summary: '근거 없는 초안',
+          confidence: 0.8,
+          sourceText: '영업기회 수정해줘',
+          actions: [],
+          warnings: [],
+        },
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'draft.actions must contain at least one approval action',
+    });
+    expect(updateSlackRequest).not.toHaveBeenCalled();
+  });
+
   it('filters company search results by text', async () => {
     const result = await handleSearchCompaniesRoute({
       body: {
@@ -469,7 +494,18 @@ describe('codex tools', () => {
           summary: '초안',
           confidence: 0.9,
           sourceText: '테스트',
-          actions: [],
+          actions: [
+            {
+              kind: 'opportunity',
+              operation: 'update',
+              lookup: {
+                id: 'opportunity-1',
+              },
+              data: {
+                stage: 'NEGOTIATION',
+              },
+            },
+          ],
           warnings: [],
         },
       },

@@ -767,6 +767,15 @@ export const handleSaveWriteDraftRoute = async (
     };
   }
 
+  const draftActions = Array.isArray(draft.actions) ? draft.actions : [];
+
+  if (draftActions.length === 0) {
+    return {
+      ok: false,
+      message: 'draft.actions must contain at least one approval action',
+    };
+  }
+
   const slackRequest = await findSlackRequestById(slackRequestId);
 
   if (!slackRequest) {

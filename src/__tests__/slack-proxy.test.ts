@@ -491,6 +491,210 @@ describe('slack proxy runner', () => {
     });
   });
 
+  it('rejects write_draft finals that are not grounded in update/delete tool results', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const runCodexDecision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'write_draft',
+        message: '영업기회 수정 승인을 요청합니다.',
+        draft: {
+          summary: '근거 없는 수정 초안',
+          confidence: 0.9,
+          sourceText: '영업기회 수정해줘',
+          actions: [],
+          warnings: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'update-record',
+        payload: {
+          kind: 'opportunity',
+          lookup: {
+            id: 'opportunity-1',
+          },
+          data: {
+            stage: 'NEGOTIATION',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'write_draft',
+        message: '영업기회 수정 승인을 요청합니다.',
+        draft: {
+          summary: '영업기회 수정 초안',
+          confidence: 0.92,
+          sourceText: '미래금융 VDI 기회 단계를 수정해줘',
+          actions: [],
+          warnings: [],
+        },
+      });
+
+    const result = await processSlackRequestWithCodex({
+      slackRequestId: 'request-2b',
+      toolClient: {
+        callTool: async (
+          endpoint: string,
+          payload: Record<string, unknown> = {},
+        ) => {
+          toolCalls.push([endpoint, payload]);
+
+          if (endpoint === 'load-slack-request') {
+            return {
+              ok: true,
+              slackRequest: {
+                id: 'request-2b',
+                normalizedText: '미래금융 VDI 기회 단계를 수정해줘',
+              },
+            };
+          }
+
+          if (endpoint === 'get-tool-catalog') {
+            return toolCatalogResponse;
+          }
+
+          if (endpoint === 'update-record') {
+            return {
+              ok: true,
+              plannedAction: {
+                kind: 'opportunity',
+                operation: 'update',
+                lookup: {
+                  id: 'opportunity-1',
+                },
+                data: {
+                  stage: 'NEGOTIATION',
+                },
+              },
+              matchedRecord: {
+                id: 'opportunity-1',
+                label: '미래금융 VDI',
+              },
+              reviewItem: {
+                kind: 'opportunity',
+                decision: 'UPDATE',
+                target: '미래금융 VDI',
+                matchedRecord: '미래금융 VDI',
+                fields: [{ key: 'stage', value: 'NEGOTIATION' }],
+              },
+            };
+          }
+
+          if (endpoint === 'save-write-draft') {
+            return {
+              id: 'request-2b',
+              processingStatus: 'AWAITING_CONFIRMATION',
+            };
+          }
+
+          throw new Error(`Unexpected tool call: ${endpoint}`);
+        },
+      },
+      runCodexDecision,
+    });
+
+    expect(runCodexDecision).toHaveBeenCalledTimes(3);
+    expect(toolCalls).toEqual([
+      ['load-slack-request', { slackRequestId: 'request-2b' }],
+      ['get-tool-catalog', {}],
+      [
+        'update-record',
+        {
+          kind: 'opportunity',
+          lookup: {
+            id: 'opportunity-1',
+          },
+          data: {
+            stage: 'NEGOTIATION',
+          },
+        },
+      ],
+      [
+        'save-write-draft',
+        {
+          slackRequestId: 'request-2b',
+          draft: {
+            summary: '영업기회 수정 초안',
+            confidence: 0.92,
+            sourceText: '미래금융 VDI 기회 단계를 수정해줘',
+            actions: [
+              {
+                kind: 'opportunity',
+                operation: 'update',
+                lookup: {
+                  id: 'opportunity-1',
+                },
+                data: {
+                  stage: 'NEGOTIATION',
+                },
+              },
+            ],
+            warnings: [],
+            review: {
+              overview: '영업기회 수정 초안',
+              opinion: '승인 전에 수정/삭제 대상과 변경 내용을 확인하세요.',
+              items: [
+                {
+                  kind: 'opportunity',
+                  decision: 'UPDATE',
+                  target: '미래금융 VDI',
+                  matchedRecord: '미래금융 VDI',
+                  fields: [{ key: 'stage', value: 'NEGOTIATION' }],
+                },
+              ],
+            },
+          },
+          resultJson: {
+            aiDiagnostics: {
+              attempted: true,
+              operation: 'write_draft',
+              provider: 'codex',
+              succeeded: true,
+            },
+          },
+        },
+      ],
+    ]);
+    expect(result).toEqual({
+      kind: 'write_draft',
+      slackRequestId: 'request-2b',
+      draft: {
+        summary: '영업기회 수정 초안',
+        confidence: 0.92,
+        sourceText: '미래금융 VDI 기회 단계를 수정해줘',
+        actions: [
+          {
+            kind: 'opportunity',
+            operation: 'update',
+            lookup: {
+              id: 'opportunity-1',
+            },
+            data: {
+              stage: 'NEGOTIATION',
+            },
+          },
+        ],
+        warnings: [],
+        review: {
+          overview: '영업기회 수정 초안',
+          opinion: '승인 전에 수정/삭제 대상과 변경 내용을 확인하세요.',
+          items: [
+            {
+              kind: 'opportunity',
+              decision: 'UPDATE',
+              target: '미래금융 VDI',
+              matchedRecord: '미래금융 VDI',
+              fields: [{ key: 'stage', value: 'NEGOTIATION' }],
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it('executes create tools immediately and stores an applied execution report', async () => {
     const toolCalls: Array<[string, Record<string, unknown>]> = [];
     const runCodexDecision = vi

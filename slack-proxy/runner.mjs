@@ -476,11 +476,65 @@ const hasSearchToolHistory = (history) =>
 const hasCreateToolHistory = (history) =>
   hasHistoryToolName(history, 'create-record');
 
+const hasApprovalPreviewHistory = (history) =>
+  hasHistoryToolName(history, 'update-record') ||
+  hasHistoryToolName(history, 'delete-record');
+
 const buildExecutedToolResults = (history, toolName) =>
   collectHistoryResults(history, toolName).map((result) => ({
     toolName,
     result,
   }));
+
+const collectApprovalPreviewResults = (history) =>
+  history
+    .filter(
+      (entry) =>
+        isToolHistoryEntry(entry) &&
+        (entry.toolName === 'update-record' || entry.toolName === 'delete-record'),
+    )
+    .map((entry) => toPlainRecord(entry.result))
+    .filter(Boolean);
+
+const enrichWriteDraftWithApprovalHistory = ({
+  draft,
+  history,
+  requestText,
+}) => {
+  const baseDraft = toPlainRecord(draft) ?? {};
+  const previewResults = collectApprovalPreviewResults(history);
+  const plannedActions = previewResults
+    .map((result) => toPlainRecord(result?.plannedAction))
+    .filter(Boolean);
+  const reviewItems = previewResults
+    .map((result) => toPlainRecord(result?.reviewItem))
+    .filter(Boolean);
+  const existingActions = Array.isArray(baseDraft.actions) ? baseDraft.actions : [];
+  const existingWarnings = Array.isArray(baseDraft.warnings)
+    ? baseDraft.warnings.filter((warning) => typeof warning === 'string')
+    : [];
+
+  return {
+    ...baseDraft,
+    sourceText:
+      typeof baseDraft.sourceText === 'string' && baseDraft.sourceText.length > 0
+        ? baseDraft.sourceText
+        : requestText,
+    actions: existingActions.length > 0 ? existingActions : plannedActions,
+    warnings: existingWarnings,
+    review:
+      toPlainRecord(baseDraft.review) ??
+      (reviewItems.length > 0
+        ? {
+            overview:
+              typeof baseDraft.summary === 'string' ? baseDraft.summary : requestText,
+            opinion:
+              '승인 전에 수정/삭제 대상과 변경 내용을 확인하세요.',
+            items: reviewItems,
+          }
+        : undefined),
+  };
+};
 
 const isToolsUnavailableMessage = (message) =>
   /tool(?:s)?(?:\s+are|\s+is)?\s+(?:unavailable|not available|disconnected|missing|not connected)/i.test(
@@ -506,6 +560,10 @@ const shouldRejectFinalDecision = ({ decision, history }) => {
 
   if (decision.mode === 'write_draft' && hasCreateToolHistory(history)) {
     return 'write_draft final mode is only for approval-gated update/delete flows.';
+  }
+
+  if (decision.mode === 'write_draft' && !hasApprovalPreviewHistory(history)) {
+    return 'write_draft final mode requires at least one update-record or delete-record tool result before approval.';
   }
 
   return null;
@@ -973,9 +1031,15 @@ export const processSlackRequestWithCodex = async ({
     }
 
     if (decision.mode === 'write_draft') {
+      const enrichedDraft = enrichWriteDraftWithApprovalHistory({
+        draft: decision.draft ?? {},
+        history,
+        requestText,
+      });
+
       await effectiveToolClient.callTool('save-write-draft', {
         slackRequestId,
-        draft: decision.draft ?? {},
+        draft: enrichedDraft,
         resultJson: {
           aiDiagnostics: {
             provider: 'codex',
@@ -990,7 +1054,7 @@ export const processSlackRequestWithCodex = async ({
       return {
         kind: 'write_draft',
         slackRequestId,
-        draft: decision.draft ?? {},
+        draft: enrichedDraft,
       };
     }
 
