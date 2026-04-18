@@ -16,6 +16,7 @@ import {
   fetchPeople,
   fetchTasks,
 } from 'src/utils/crm-query';
+import type { ObjectFieldMetadata } from 'src/utils/metadata-client';
 import { fetchObjectFields } from 'src/utils/metadata-client';
 import { toRichTextValue } from 'src/utils/rich-text';
 import { normalizeText, splitFullName, toTitleCaseKey } from 'src/utils/strings';
@@ -131,7 +132,38 @@ type ResolvedEntityMaps = {
   opportunityIdsByName: Map<string, string>;
 };
 
+type SelectOption = {
+  label: string;
+  value: string;
+};
+
 const writableFieldNamesByKind = new Map<EntityKind, Promise<Set<string>>>();
+const writableFieldsByKind = new Map<EntityKind, Promise<ObjectFieldMetadata[]>>();
+
+const SELECT_VALUE_ALIASES: Partial<
+  Record<EntityKind, Partial<Record<string, Record<string, string[]>>>>
+> = {
+  company: {
+    companyStatus: {
+      ACTIVE: ['active', '활성'],
+      DORMANT: ['dormant', '휴면'],
+      INACTIVE: ['inactive', '비활성'],
+    },
+  },
+  opportunity: {
+    stage: {
+      IDENTIFIED: ['lead', 'new lead', 'new', '리드', '신규 리드', '신규리드', '발굴'],
+      QUALIFIED: ['qualified', 'qualification', '자격확인'],
+      VENDOR_ALIGNED: ['vendor aligned', 'vendor_aligned', '벤더협의'],
+      DISCOVERY_POC: ['discovery', 'poc', 'proposal', 'proposal/poc', '제안', '제안/poc'],
+      QUOTED: ['quote', 'quoted', '견적'],
+      NEGOTIATION: ['negotiation', 'negotiating', '협상'],
+      CLOSED_WON: ['won', 'closed won', '수주'],
+      CLOSED_LOST: ['lost', 'closed lost', '실주'],
+      ON_HOLD: ['hold', 'on hold', '보류'],
+    },
+  },
+};
 
 const toNormalizedKey = (value: string | null | undefined): string =>
   normalizeText(value);
@@ -144,6 +176,52 @@ const toPersonLookupKey = ({
   companyName?: string | null | undefined;
 }): string => `${toNormalizedKey(name)}::${toNormalizedKey(companyName)}`;
 
+const toSelectOptions = (value: unknown): SelectOption[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((option) => {
+    if (!option || typeof option !== 'object') {
+      return [];
+    }
+
+    const label = normalizeLookupValue((option as Record<string, unknown>).label);
+    const rawValue = normalizeLookupValue((option as Record<string, unknown>).value);
+
+    if (!label || !rawValue) {
+      return [];
+    }
+
+    return [
+      {
+        label,
+        value: rawValue,
+      },
+    ];
+  });
+};
+
+const getWritableFields = async (kind: EntityKind): Promise<ObjectFieldMetadata[]> => {
+  const cached = writableFieldsByKind.get(kind);
+
+  if (cached) {
+    return cached;
+  }
+
+  const loader = (async () => {
+    try {
+      return await fetchObjectFields(kind);
+    } catch {
+      return [];
+    }
+  })();
+
+  writableFieldsByKind.set(kind, loader);
+
+  return loader;
+};
+
 const getWritableFieldNames = async (kind: EntityKind): Promise<Set<string>> => {
   const cached = writableFieldNamesByKind.get(kind);
 
@@ -152,20 +230,16 @@ const getWritableFieldNames = async (kind: EntityKind): Promise<Set<string>> => 
   }
 
   const loader = (async () => {
-    try {
-      const fields = await fetchObjectFields(kind);
+    const fields = await getWritableFields(kind);
 
-      if (fields.length > 0) {
-        return new Set(
-          fields.flatMap((field) =>
-            field.relation
-              ? [field.name, `${field.name}Id`]
-              : [field.name],
-          ),
-        );
-      }
-    } catch {
-      // Fall back to the static field list when metadata lookup is unavailable.
+    if (fields.length > 0) {
+      return new Set(
+        fields.flatMap((field) =>
+          field.relation
+            ? [field.name, `${field.name}Id`]
+            : [field.name],
+        ),
+      );
     }
 
     return new Set(FALLBACK_WRITABLE_FIELDS[kind] ?? []);
@@ -174,6 +248,54 @@ const getWritableFieldNames = async (kind: EntityKind): Promise<Set<string>> => 
   writableFieldNamesByKind.set(kind, loader);
 
   return loader;
+};
+
+const normalizeSelectFieldValue = async ({
+  kind,
+  fieldName,
+  value,
+}: {
+  kind: EntityKind;
+  fieldName: string;
+  value: string;
+}): Promise<string | null> => {
+  const fields = await getWritableFields(kind);
+  const field = fields.find((candidate) => candidate.name === fieldName);
+
+  if (!field || field.type !== 'SELECT') {
+    return value;
+  }
+
+  const options = toSelectOptions(field.options);
+
+  if (options.length === 0) {
+    return value;
+  }
+
+  const normalizedValue = toNormalizedKey(value);
+  const directMatch = options.find(
+    (option) =>
+      toNormalizedKey(option.value) === normalizedValue ||
+      toNormalizedKey(option.label) === normalizedValue,
+  );
+
+  if (directMatch) {
+    return directMatch.value;
+  }
+
+  const aliasOptions = SELECT_VALUE_ALIASES[kind]?.[fieldName];
+
+  if (!aliasOptions) {
+    return null;
+  }
+
+  const aliasMatch = options.find((option) =>
+    (aliasOptions[option.value] ?? []).some(
+      (alias) => toNormalizedKey(alias) === normalizedValue,
+    ),
+  );
+
+  return aliasMatch?.value ?? null;
 };
 
 const lookupCompanyIdByName = async (name: string): Promise<string | null> => {
@@ -336,6 +458,20 @@ const normalizeEntityData = async (
         primaryLinkUrl: nextData.linkedinLink,
       };
     }
+
+    if (typeof nextData.companyStatus === 'string') {
+      const companyStatus = await normalizeSelectFieldValue({
+        kind,
+        fieldName: 'companyStatus',
+        value: nextData.companyStatus,
+      });
+
+      if (companyStatus) {
+        nextData.companyStatus = companyStatus;
+      } else {
+        delete nextData.companyStatus;
+      }
+    }
   }
 
   if (kind === 'note' && typeof nextData.body === 'string' && !nextData.bodyV2) {
@@ -365,6 +501,20 @@ const normalizeEntityData = async (
         typeof nextData.currencyCode === 'string' ? nextData.currencyCode : 'KRW',
     };
     delete nextData.currencyCode;
+  }
+
+  if (kind === 'opportunity' && typeof nextData.stage === 'string') {
+    const stage = await normalizeSelectFieldValue({
+      kind,
+      fieldName: 'stage',
+      value: nextData.stage,
+    });
+
+    if (stage) {
+      nextData.stage = stage;
+    } else {
+      delete nextData.stage;
+    }
   }
 
   const writableFieldNames = await getWritableFieldNames(kind);

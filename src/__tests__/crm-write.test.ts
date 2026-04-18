@@ -24,11 +24,19 @@ const getMetadataFields = (kind: string) => {
   switch (kind) {
     case 'company':
       return [
-        { name: 'name' },
-        { name: 'domainName' },
-        { name: 'linkedinLink' },
-        { name: 'employees' },
-        { name: 'companyStatus' },
+        { name: 'name', type: 'TEXT' },
+        { name: 'domainName', type: 'LINKS' },
+        { name: 'linkedinLink', type: 'LINKS' },
+        { name: 'employees', type: 'NUMBER' },
+        {
+          name: 'companyStatus',
+          type: 'SELECT',
+          options: [
+            { label: '활성', value: 'ACTIVE' },
+            { label: '휴면', value: 'DORMANT' },
+            { label: '비활성', value: 'INACTIVE' },
+          ],
+        },
       ];
     case 'person':
       return [
@@ -41,12 +49,26 @@ const getMetadataFields = (kind: string) => {
       ];
     case 'opportunity':
       return [
-        { name: 'name' },
+        { name: 'name', type: 'TEXT' },
         { name: 'company', relation: { type: 'MANY_TO_ONE' } },
         { name: 'pointOfContact', relation: { type: 'MANY_TO_ONE' } },
-        { name: 'stage' },
-        { name: 'closeDate' },
-        { name: 'amount' },
+        {
+          name: 'stage',
+          type: 'SELECT',
+          options: [
+            { label: '발굴', value: 'IDENTIFIED' },
+            { label: '자격확인', value: 'QUALIFIED' },
+            { label: '벤더협의', value: 'VENDOR_ALIGNED' },
+            { label: '제안/PoC', value: 'DISCOVERY_POC' },
+            { label: '견적', value: 'QUOTED' },
+            { label: '협상', value: 'NEGOTIATION' },
+            { label: '수주', value: 'CLOSED_WON' },
+            { label: '실주', value: 'CLOSED_LOST' },
+            { label: '보류', value: 'ON_HOLD' },
+          ],
+        },
+        { name: 'closeDate', type: 'DATE' },
+        { name: 'amount', type: 'CURRENCY' },
       ];
     case 'note':
       return [{ name: 'title' }, { name: 'bodyV2' }];
@@ -222,7 +244,7 @@ describe('crm write helpers', () => {
             name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
             companyId: 'company-1',
             pointOfContactId: 'person-1',
-            stage: 'DISCOVERY',
+            stage: 'DISCOVERY_POC',
           }),
         },
         id: true,
@@ -235,7 +257,7 @@ describe('crm write helpers', () => {
     expect(payload).not.toHaveProperty('contactName');
   });
 
-  it('normalizes company status aliases and drops unsupported company fields', async () => {
+  it('drops invalid company status values and unsupported company fields', async () => {
     const { applyApprovedDraft } = await import('src/utils/crm-write');
 
     mutation.mockResolvedValue({
@@ -267,7 +289,6 @@ describe('crm write helpers', () => {
         __args: {
           data: expect.objectContaining({
             name: '서광건설엔지니어링',
-            companyStatus: 'PROSPECT',
           }),
         },
         id: true,
@@ -277,7 +298,47 @@ describe('crm write helpers', () => {
     const payload = mutation.mock.calls[0]?.[0]?.createCompany?.__args?.data ?? {};
 
     expect(payload).not.toHaveProperty('status');
+    expect(payload).not.toHaveProperty('companyStatus');
     expect(payload).not.toHaveProperty('unsupportedField');
+  });
+
+  it('normalizes opportunity stage aliases to allowed metadata option values', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValue({
+      createOpportunity: {
+        id: 'opp-1',
+      },
+    });
+
+    await applyApprovedDraft({
+      summary: '리드 등록 초안',
+      confidence: 0.9,
+      sourceText: '서광건설엔지니어링 신규 리드 등록',
+      warnings: [],
+      actions: [
+        {
+          kind: 'opportunity',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            stage: 'Lead',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      createOpportunity: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링 Autodesk BIM 운영 체계',
+            stage: 'IDENTIFIED',
+          }),
+        },
+        id: true,
+      },
+    });
   });
 
   it('creates note and task target links for resolved company, person, and opportunity records', async () => {
