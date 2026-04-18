@@ -1,0 +1,11 @@
+{
+  "name": "@daou/twenty-slack-proxy",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@openai/codex": "0.121.0"
+  }
+}

@@ -5,10 +5,13 @@ import {
   normalizeSlackStatus,
   resolveUpstreamUrl,
 } from './lib.mjs';
+import { handleInternalRunnerRequest } from './server-logic.mjs';
 
 const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const TWENTY_INTERNAL_URL =
   process.env.TWENTY_INTERNAL_URL ?? 'http://server:3000';
+const RUNNER_SHARED_SECRET = process.env.RUNNER_SHARED_SECRET ?? '';
+const TOOL_SHARED_SECRET = process.env.TOOL_SHARED_SECRET ?? '';
 
 const readRequestBody = async (request) => {
   const chunks = [];
@@ -86,6 +89,22 @@ const server = createServer(async (request, response) => {
 
   if (request.method !== 'POST') {
     sendJson(response, 405, { ok: false, message: 'Method not allowed' });
+
+    return;
+  }
+
+  if (pathname === '/internal/slack-requests/process') {
+    const body = await readRequestBody(request);
+    const result = await handleInternalRunnerRequest({
+      method: request.method,
+      headers: request.headers,
+      body: body.toString('utf8'),
+      runnerSharedSecret: RUNNER_SHARED_SECRET,
+      toolSharedSecret: TOOL_SHARED_SECRET,
+      twentyInternalUrl: TWENTY_INTERNAL_URL,
+    });
+
+    sendJson(response, result.statusCode, result.body);
 
     return;
   }

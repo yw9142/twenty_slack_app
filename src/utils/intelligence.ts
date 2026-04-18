@@ -1696,6 +1696,7 @@ const enrichDraftWithPublicContext = async ({
   }
 
   const enrichment = await callAnthropicStructuredJson<PublicEnrichmentResponse>({
+    operation: 'public_enrichment',
     systemPrompt: buildPublicEnrichmentSystemPrompt(),
     userPrompt: buildPublicEnrichmentUserPrompt({
       sourceText,

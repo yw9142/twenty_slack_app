@@ -2281,7 +2281,6 @@ export const answerCrmQuery = async ({
   resultJson: Record<string, unknown>;
 }> => {
   const route = resolveCrmQueryRoute(classification);
-  const handler = CRM_QUERY_HANDLER_REGISTRY[route.route];
 
   if (route.route === 'METADATA_DYNAMIC') {
     if (metadataAwareDynamicHandler) {
@@ -2309,6 +2308,8 @@ export const answerCrmQuery = async ({
 
     return buildGeneralSummaryReply({ classification, text });
   }
+
+  const handler = CRM_QUERY_HANDLER_REGISTRY[route.route];
 
   if (handler) {
     return handler({ classification, text });

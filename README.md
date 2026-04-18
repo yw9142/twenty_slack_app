@@ -117,8 +117,6 @@ sequenceDiagram
 - `slack-commands-route`
 - `slack-interactivity-route`
 - `process-slack-intake`
-- `answer-crm-query`
-- `build-crm-write-draft`
 - `apply-approved-draft`
 - `post-slack-message`
 - `notify-admin`

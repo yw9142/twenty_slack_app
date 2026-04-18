@@ -1,10 +1,14 @@
 FROM node:24-alpine
 
-WORKDIR /app
+WORKDIR /app/slack-proxy
 
-COPY lib.mjs server.mjs ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY lib.mjs runner.mjs server-logic.mjs server.mjs ./
 
 ENV PORT=8080
 ENV TWENTY_INTERNAL_URL=http://server:3000
+ENV PATH=/app/slack-proxy/node_modules/.bin:$PATH
 
 CMD ["node", "server.mjs"]

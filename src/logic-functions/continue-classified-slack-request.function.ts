@@ -4,8 +4,9 @@ import type {
 } from 'twenty-sdk';
 
 import { CONTINUE_CLASSIFIED_SLACK_REQUEST_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
+import { handoffSlackRequestToRunner } from 'src/utils/codex-runner';
 import { defineLogicFunction } from 'src/utils/define-logic-function';
-import { processClassifiedSlackRequestById } from 'src/utils/slack-orchestrator';
+import { updateSlackRequest } from 'src/utils/slack-intake-service';
 
 const resolveSlackRequestId = (
   payload: {
@@ -35,7 +36,7 @@ const handler = async (
       >,
 ): Promise<Record<string, unknown>> => {
   const slackRequestId = resolveSlackRequestId(payload);
-  const processingStatus =
+  const currentProcessingStatus =
     payload &&
     'properties' in payload &&
     payload.properties &&
@@ -46,20 +47,28 @@ const handler = async (
       ? payload.properties.after.processingStatus
       : undefined;
 
-  if (processingStatus && processingStatus !== 'CLASSIFIED') {
+  if (currentProcessingStatus && currentProcessingStatus !== 'CLASSIFIED') {
     return {
       slackRequestId,
       skipped: true,
-      processingStatus,
+      processingStatus: currentProcessingStatus,
     };
   }
 
-  const slackRequest = await processClassifiedSlackRequestById(slackRequestId);
+  await updateSlackRequest({
+    id: slackRequestId,
+    data: {
+      processingStatus: 'PROCESSING',
+      lastProcessedAt: new Date().toISOString(),
+    },
+  });
+  const nextProcessingStatus = await handoffSlackRequestToRunner({
+    slackRequestId,
+  });
 
   return {
-    slackRequestId: slackRequest.id,
-    processingStatus: slackRequest.processingStatus,
-    resultJson: slackRequest.resultJson,
+    slackRequestId,
+    processingStatus: nextProcessingStatus,
   };
 };
 
@@ -69,6 +78,6 @@ export default defineLogicFunction({
   name: 'continue-classified-slack-request',
   description:
     'Manually continues a previously classified Slack request into query answering or draft generation',
-  timeoutSeconds: 60,
+  timeoutSeconds: 15,
   handler,
 });
