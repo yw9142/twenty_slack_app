@@ -12,6 +12,7 @@ const SAVE_APPLIED_RESULT_ENDPOINT = 'save-applied-result';
 const INTERNAL_ONLY_TOOL_NAMES = [
   'load-slack-request',
   TOOL_CATALOG_ENDPOINT,
+  'load-thread-context',
   'save-query-answer',
   'save-write-draft',
   SAVE_APPLIED_RESULT_ENDPOINT,
@@ -89,6 +90,10 @@ const normalizeDecision = (decision) => {
         decision.draft && typeof decision.draft === 'object'
           ? decision.draft
           : undefined,
+      threadContextPatch:
+        decision.threadContextPatch && typeof decision.threadContextPatch === 'object'
+          ? decision.threadContextPatch
+          : undefined,
       diagnostics:
         decision.diagnostics && typeof decision.diagnostics === 'object'
           ? decision.diagnostics
@@ -128,6 +133,7 @@ const normalizeDecision = (decision) => {
 export const buildCodexPrompt = ({
   slackRequestId,
   slackRequest,
+  threadContext,
   toolCatalog,
   history,
 }) =>
@@ -135,11 +141,13 @@ export const buildCodexPrompt = ({
     'You are a Slack-to-Twenty CRM orchestration agent.',
     'Use the structured tool catalog below. Call only modelVisibleTools.',
     'Internal tools are runner-only and must never be called directly.',
+    'Same-thread memory is provided below. Use it to resolve follow-ups like "그거", "두 번째 거", or "방금 찾은 기회".',
     'Policy:',
     '- Query/list/report requests must use at least one search-* tool before a final query answer.',
     '- When the user wants a broad list or report without explicit filters, call the relevant search-* tool with {"query": ""}.',
     '- Create requests may execute create-record immediately. After execution, finish with mode="applied".',
     '- Update and delete requests must use update-record or delete-record to capture the exact target, then finish with mode="write_draft" for Slack approval.',
+    '- Every successful final response must include threadContextPatch so the same Slack thread can continue the conversation safely.',
     `Internal-only tools that you must never call directly: ${INTERNAL_ONLY_TOOL_NAMES.join(', ')}.`,
     'Return exactly one JSON object in one of these shapes:',
     JSON.stringify(
@@ -153,6 +161,24 @@ export const buildCodexPrompt = ({
           kind: 'final',
           mode: 'query',
           message: '<slack reply text>',
+          threadContextPatch: {
+            assistantTurn: {
+              text: '<same slack reply text>',
+              outcome: 'query',
+            },
+            summary: '<short updated thread summary>',
+            selectedEntities: {
+              companyIds: [],
+              personIds: [],
+              opportunityIds: [],
+              licenseIds: [],
+            },
+            lastQuerySnapshot: {
+              requestId: '<slack request id>',
+              items: [],
+            },
+            pendingApproval: null,
+          },
         },
         {
           kind: 'final',
@@ -165,11 +191,47 @@ export const buildCodexPrompt = ({
             actions: [],
             warnings: [],
           },
+          threadContextPatch: {
+            assistantTurn: {
+              text: '<approval summary text>',
+              outcome: 'write_draft',
+            },
+            summary: '<short updated thread summary>',
+            selectedEntities: {
+              companyIds: [],
+              personIds: [],
+              opportunityIds: [],
+              licenseIds: [],
+            },
+            lastQuerySnapshot: null,
+            pendingApproval: {
+              sourceSlackRequestId: '<slack request id>',
+              summary: '<draft summary>',
+              actions: [],
+              review: null,
+              status: 'AWAITING_CONFIRMATION',
+            },
+          },
         },
         {
           kind: 'final',
           mode: 'applied',
           message: '<slack reply text after immediate create execution>',
+          threadContextPatch: {
+            assistantTurn: {
+              text: '<same slack reply text>',
+              outcome: 'applied',
+            },
+            summary: '<short updated thread summary>',
+            selectedEntities: {
+              companyIds: [],
+              personIds: [],
+              opportunityIds: [],
+              licenseIds: [],
+            },
+            lastQuerySnapshot: null,
+            pendingApproval: null,
+          },
         },
         {
           kind: 'error',
@@ -181,8 +243,8 @@ export const buildCodexPrompt = ({
     ),
     'Tool catalog:',
     serializeToolCatalogForPrompt(toolCatalog),
-    'Request context and prior tool history:',
-    JSON.stringify({ slackRequestId, slackRequest, history }, null, 2),
+    'Request context, same-thread memory, and prior tool history:',
+    JSON.stringify({ slackRequestId, slackRequest, threadContext, history }, null, 2),
     'Never claim that tools are unavailable or cannot be called.',
     'Return only valid JSON.',
   ].join('\n');
@@ -360,6 +422,101 @@ const unwrapToolCatalogRecord = (value) => {
   }
 
   return record;
+};
+
+const unwrapThreadContextRecord = (value) => {
+  const record = toPlainRecord(value);
+
+  if (!record) {
+    return null;
+  }
+
+  if (toPlainRecord(record.threadContext)) {
+    return record.threadContext;
+  }
+
+  return record;
+};
+
+const normalizeStringArray = (value) =>
+  Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+
+const normalizeThreadContextPatch = (value) => {
+  const record = toPlainRecord(value);
+  const assistantTurn = toPlainRecord(record?.assistantTurn);
+
+  if (
+    !record ||
+    !assistantTurn ||
+    typeof record.summary !== 'string' ||
+    typeof assistantTurn.text !== 'string' ||
+    (assistantTurn.outcome !== 'query' &&
+      assistantTurn.outcome !== 'write_draft' &&
+      assistantTurn.outcome !== 'applied' &&
+      assistantTurn.outcome !== 'rejected' &&
+      assistantTurn.outcome !== 'system')
+  ) {
+    return null;
+  }
+
+  const selectedEntities = toPlainRecord(record.selectedEntities) ?? {};
+
+  return {
+    assistantTurn: {
+      text: assistantTurn.text,
+      outcome: assistantTurn.outcome,
+    },
+    summary: record.summary,
+    selectedEntities: {
+      ...(selectedEntities.companyIds
+        ? { companyIds: normalizeStringArray(selectedEntities.companyIds) }
+        : {}),
+      ...(selectedEntities.personIds
+        ? { personIds: normalizeStringArray(selectedEntities.personIds) }
+        : {}),
+      ...(selectedEntities.opportunityIds
+        ? { opportunityIds: normalizeStringArray(selectedEntities.opportunityIds) }
+        : {}),
+      ...(selectedEntities.licenseIds
+        ? { licenseIds: normalizeStringArray(selectedEntities.licenseIds) }
+        : {}),
+    },
+    ...('lastQuerySnapshot' in record
+      ? {
+          lastQuerySnapshot: record.lastQuerySnapshot,
+        }
+      : {}),
+    ...('pendingApproval' in record
+      ? {
+          pendingApproval: record.pendingApproval,
+        }
+      : {}),
+  };
+};
+
+const buildPromptThreadContext = ({ threadContext, slackRequestId, requestText }) => {
+  const record = toPlainRecord(threadContext) ?? {};
+  const recentTurns = Array.isArray(record.recentTurnsJson)
+    ? record.recentTurnsJson.filter((turn) => toPlainRecord(turn))
+    : [];
+  const currentTurnAlreadyIncluded = recentTurns.some(
+    (turn) => toPlainRecord(turn)?.requestId === slackRequestId,
+  );
+
+  return {
+    ...record,
+    recentTurnsJson: currentTurnAlreadyIncluded
+      ? recentTurns.slice(-6)
+      : [
+          ...recentTurns.slice(-5),
+          {
+            requestId: slackRequestId,
+            userText: requestText,
+            assistantText: null,
+            outcome: null,
+          },
+        ],
+  };
 };
 
 const toStringValue = (value) =>
@@ -544,6 +701,10 @@ const isToolsUnavailableMessage = (message) =>
 const shouldRejectFinalDecision = ({ decision, history }) => {
   if (isToolsUnavailableMessage(decision.message)) {
     return 'Never claim that tools are unavailable or cannot be called.';
+  }
+
+  if (!normalizeThreadContextPatch(decision.threadContextPatch)) {
+    return 'Every successful final response must include threadContextPatch.';
   }
 
   if (hasCreateToolHistory(history) && decision.mode !== 'applied') {
@@ -735,6 +896,21 @@ const FALLBACK_TOOL_CATALOG = {
       visibility: 'internal',
     },
     {
+      name: 'load-thread-context',
+      description: 'Load the same-thread Slack memory.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slackRequestId: {
+            type: 'string',
+          },
+        },
+        required: ['slackRequestId'],
+      },
+      visibility: 'internal',
+    },
+    {
       name: 'save-query-answer',
       description: 'Persist a query answer.',
       policy: 'Runner-only.',
@@ -882,6 +1058,13 @@ export const processSlackRequestWithCodex = async ({
     }
   }
   const requestText = getRequestText(slackRequest);
+  const threadContextRecord = await effectiveToolClient.callTool(
+    'load-thread-context',
+    {
+      slackRequestId,
+    },
+  );
+  const threadContext = unwrapThreadContextRecord(threadContextRecord);
   const allowedModelToolNames = new Set(
     toolCatalog.modelVisibleTools.map((descriptor) => descriptor.name),
   );
@@ -897,12 +1080,22 @@ export const processSlackRequestWithCodex = async ({
       toolName: TOOL_CATALOG_ENDPOINT,
       result: toolCatalog,
     },
+    {
+      type: 'tool_result',
+      toolName: 'load-thread-context',
+      result: threadContext,
+    },
   ];
 
   for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
     const prompt = buildCodexPrompt({
       slackRequestId,
       slackRequest,
+      threadContext: buildPromptThreadContext({
+        threadContext,
+        slackRequestId,
+        requestText,
+      }),
       toolCatalog,
       history,
     });
@@ -974,6 +1167,10 @@ export const processSlackRequestWithCodex = async ({
     }
 
     if (decision.mode === 'query') {
+      const threadContextPatch = normalizeThreadContextPatch(
+        decision.threadContextPatch,
+      );
+
       await effectiveToolClient.callTool('save-query-answer', {
         slackRequestId,
         reply: {
@@ -988,6 +1185,7 @@ export const processSlackRequestWithCodex = async ({
             ...(decision.diagnostics ?? {}),
           },
         },
+        threadContextPatch,
       });
       await effectiveToolClient.callTool('post-slack-reply', {
         slackRequestId,
@@ -1002,6 +1200,10 @@ export const processSlackRequestWithCodex = async ({
     }
 
     if (decision.mode === 'applied') {
+      const threadContextPatch = normalizeThreadContextPatch(
+        decision.threadContextPatch,
+      );
+
       await effectiveToolClient.callTool(SAVE_APPLIED_RESULT_ENDPOINT, {
         slackRequestId,
         reply: {
@@ -1017,6 +1219,7 @@ export const processSlackRequestWithCodex = async ({
           },
           executedTools: buildExecutedToolResults(history, 'create-record'),
         },
+        threadContextPatch,
       });
       await effectiveToolClient.callTool('post-slack-reply', {
         slackRequestId,
@@ -1036,6 +1239,9 @@ export const processSlackRequestWithCodex = async ({
         history,
         requestText,
       });
+      const threadContextPatch = normalizeThreadContextPatch(
+        decision.threadContextPatch,
+      );
 
       await effectiveToolClient.callTool('save-write-draft', {
         slackRequestId,
@@ -1049,6 +1255,7 @@ export const processSlackRequestWithCodex = async ({
             ...(decision.diagnostics ?? {}),
           },
         },
+        threadContextPatch,
       });
 
       return {

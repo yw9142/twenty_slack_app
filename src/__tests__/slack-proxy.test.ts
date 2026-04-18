@@ -100,6 +100,20 @@ const toolCatalogResponse = {
         },
       },
       {
+        name: 'load-thread-context',
+        description: 'Load the Slack thread context.',
+        policy: 'Runner-only.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            slackRequestId: {
+              type: 'string',
+            },
+          },
+          required: ['slackRequestId'],
+        },
+      },
+      {
         name: 'save-query-answer',
         description: 'Persist a query answer.',
         policy: 'Runner-only.',
@@ -170,6 +184,29 @@ const buildToolClient = (
 
     if (endpoint === 'get-tool-catalog') {
       return toolCatalogResponse;
+    }
+
+    if (endpoint === 'load-thread-context') {
+      return {
+        ok: true,
+        threadContext: {
+          threadKey: 'T1:C1:thread-1',
+          summaryJson: {
+            text: '이전 조회가 있었다.',
+          },
+          recentTurnsJson: [],
+          contextJson: {
+            selectedCompanyIds: [],
+            selectedPersonIds: [],
+            selectedOpportunityIds: [],
+            selectedLicenseIds: [],
+            lastQuerySnapshot: null,
+          },
+          pendingApprovalJson: null,
+          lastSlackRequestId: null,
+          lastRepliedAt: null,
+        },
+      };
     }
 
     if (endpoint === 'search-opportunities') {
@@ -249,6 +286,87 @@ const buildToolClient = (
 });
 
 describe('slack proxy runner', () => {
+  it('loads thread context before accepting a query final and requires threadContextPatch', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const runCodexDecision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'query',
+        message: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+      })
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'search-opportunities',
+        payload: {
+          query: '미래금융',
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'query',
+        message: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+        threadContextPatch: {
+          assistantTurn: {
+            text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+            outcome: 'query',
+          },
+          summary: '미래금융 영업기회 조회를 마쳤다.',
+          selectedEntities: {
+            opportunityIds: ['opportunity-1'],
+          },
+          lastQuerySnapshot: {
+            requestId: 'request-1',
+            items: [
+              {
+                id: 'opportunity-1',
+                kind: 'opportunity',
+                label: '미래금융 VDI',
+                order: 0,
+                summary: 'NEGOTIATION',
+              },
+            ],
+          },
+          pendingApproval: null,
+        },
+      });
+
+    await processSlackRequestWithCodex({
+      slackRequestId: 'request-1',
+      toolClient: buildToolClient(toolCalls),
+      runCodexDecision,
+    });
+
+    expect(runCodexDecision).toHaveBeenCalledTimes(3);
+    expect(toolCalls).toEqual([
+      ['load-slack-request', { slackRequestId: 'request-1' }],
+      ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-1' }],
+      ['search-opportunities', { query: '미래금융' }],
+      [
+        'save-query-answer',
+        expect.objectContaining({
+          slackRequestId: 'request-1',
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 영업기회 조회를 마쳤다.',
+          }),
+        }),
+      ],
+      [
+        'post-slack-reply',
+        {
+          slackRequestId: 'request-1',
+          text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+        },
+      ],
+    ]);
+
+    const firstCall = runCodexDecision.mock.calls[0][0];
+    expect(firstCall.prompt).toContain('load-thread-context');
+    expect(firstCall.prompt).toContain('recentTurnsJson');
+    expect(firstCall.prompt).toContain('pendingApprovalJson');
+  });
+
   it('wraps load-slack-request payloads and prompts a structured tool catalog before accepting a query answer', async () => {
     const toolCalls: Array<[string, Record<string, unknown>]> = [];
     const runCodexDecision = vi
@@ -270,6 +388,29 @@ describe('slack proxy runner', () => {
         kind: 'final',
         mode: 'query',
         message: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+        threadContextPatch: {
+          assistantTurn: {
+            text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+            outcome: 'query',
+          },
+          summary: '미래금융 영업기회 조회를 마쳤다.',
+          selectedEntities: {
+            opportunityIds: ['opportunity-1'],
+          },
+          lastQuerySnapshot: {
+            requestId: 'request-1',
+            items: [
+              {
+                id: 'opportunity-1',
+                kind: 'opportunity',
+                label: '미래금융 VDI',
+                order: 0,
+                summary: 'NEGOTIATION',
+              },
+            ],
+          },
+          pendingApproval: null,
+        },
       });
 
     const result = await processSlackRequestWithCodex({
@@ -281,10 +422,11 @@ describe('slack proxy runner', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-1' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-1' }],
       ['search-opportunities', { query: '미래금융' }],
       [
         'save-query-answer',
-        {
+        expect.objectContaining({
           reply: {
             text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
           },
@@ -297,7 +439,10 @@ describe('slack proxy runner', () => {
             },
           },
           slackRequestId: 'request-1',
-        },
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 영업기회 조회를 마쳤다.',
+          }),
+        }),
       ],
       [
         'post-slack-reply',
@@ -369,6 +514,35 @@ describe('slack proxy runner', () => {
           ],
           warnings: [],
         },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '영업기회 수정 승인을 요청합니다.',
+            outcome: 'write_draft',
+          },
+          summary: '미래금융 VDI 기회 수정 승인을 기다린다.',
+          selectedEntities: {
+            opportunityIds: ['opportunity-1'],
+          },
+          lastQuerySnapshot: null,
+          pendingApproval: {
+            sourceSlackRequestId: 'request-2',
+            summary: '영업기회 수정 초안',
+            actions: [
+              {
+                kind: 'opportunity',
+                operation: 'update',
+                lookup: {
+                  id: 'opportunity-1',
+                },
+                data: {
+                  stage: 'NEGOTIATION',
+                },
+              },
+            ],
+            review: null,
+            status: 'AWAITING_CONFIRMATION',
+          },
+        },
       });
 
     const result = await processSlackRequestWithCodex({
@@ -392,6 +566,29 @@ describe('slack proxy runner', () => {
 
           if (endpoint === 'get-tool-catalog') {
             return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-2',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
           }
 
           if (endpoint === 'update-record') {
@@ -421,6 +618,7 @@ describe('slack proxy runner', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-2' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-2' }],
       [
         'update-record',
         {
@@ -463,6 +661,9 @@ describe('slack proxy runner', () => {
               succeeded: true,
             },
           },
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 VDI 기회 수정 승인을 기다린다.',
+          }),
         },
       ],
     ]);
@@ -531,6 +732,47 @@ describe('slack proxy runner', () => {
           actions: [],
           warnings: [],
         },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '영업기회 수정 승인을 요청합니다.',
+            outcome: 'write_draft',
+          },
+          summary: '미래금융 VDI 기회 수정 승인을 기다린다.',
+          selectedEntities: {
+            opportunityIds: ['opportunity-1'],
+          },
+          lastQuerySnapshot: null,
+          pendingApproval: {
+            sourceSlackRequestId: 'request-2b',
+            summary: '영업기회 수정 초안',
+            actions: [
+              {
+                kind: 'opportunity',
+                operation: 'update',
+                lookup: {
+                  id: 'opportunity-1',
+                },
+                data: {
+                  stage: 'NEGOTIATION',
+                },
+              },
+            ],
+            review: {
+              overview: '영업기회 수정 초안',
+              opinion: '승인 전에 수정/삭제 대상과 변경 내용을 확인하세요.',
+              items: [
+                {
+                  kind: 'opportunity',
+                  decision: 'UPDATE',
+                  target: '미래금융 VDI',
+                  matchedRecord: '미래금융 VDI',
+                  fields: [{ key: 'stage', value: 'NEGOTIATION' }],
+                },
+              ],
+            },
+            status: 'AWAITING_CONFIRMATION',
+          },
+        },
       });
 
     const result = await processSlackRequestWithCodex({
@@ -554,6 +796,29 @@ describe('slack proxy runner', () => {
 
           if (endpoint === 'get-tool-catalog') {
             return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-2b',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
           }
 
           if (endpoint === 'update-record') {
@@ -600,6 +865,7 @@ describe('slack proxy runner', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-2b' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-2b' }],
       [
         'update-record',
         {
@@ -655,6 +921,9 @@ describe('slack proxy runner', () => {
               succeeded: true,
             },
           },
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 VDI 기회 수정 승인을 기다린다.',
+          }),
         },
       ],
     ]);
@@ -713,6 +982,18 @@ describe('slack proxy runner', () => {
         kind: 'final',
         mode: 'applied',
         message: '미래금융 회사를 생성했습니다.',
+        threadContextPatch: {
+          assistantTurn: {
+            text: '미래금융 회사를 생성했습니다.',
+            outcome: 'applied',
+          },
+          summary: '미래금융 회사를 생성했다.',
+          selectedEntities: {
+            companyIds: ['company-1'],
+          },
+          lastQuerySnapshot: null,
+          pendingApproval: null,
+        },
       });
 
     const result = await processSlackRequestWithCodex({
@@ -736,6 +1017,29 @@ describe('slack proxy runner', () => {
 
           if (endpoint === 'get-tool-catalog') {
             return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-create-company',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
           }
 
           if (endpoint === 'create-record') {
@@ -769,6 +1073,7 @@ describe('slack proxy runner', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-create-company' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-create-company' }],
       [
         'create-record',
         {
@@ -806,6 +1111,9 @@ describe('slack proxy runner', () => {
             ],
           },
           slackRequestId: 'request-create-company',
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 회사를 생성했다.',
+          }),
         },
       ],
       [
@@ -854,6 +1162,18 @@ describe('slack proxy runner', () => {
         kind: 'final',
         mode: 'applied',
         message: '미래금융 회사를 생성했습니다.',
+        threadContextPatch: {
+          assistantTurn: {
+            text: '미래금융 회사를 생성했습니다.',
+            outcome: 'applied',
+          },
+          summary: '미래금융 회사를 생성했다.',
+          selectedEntities: {
+            companyIds: ['company-1'],
+          },
+          lastQuerySnapshot: null,
+          pendingApproval: null,
+        },
       });
 
     const result = await processSlackRequestWithCodex({
@@ -877,6 +1197,29 @@ describe('slack proxy runner', () => {
 
           if (endpoint === 'get-tool-catalog') {
             return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-create-guard',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
           }
 
           if (endpoint === 'create-record') {
@@ -911,6 +1254,7 @@ describe('slack proxy runner', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-create-guard' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-create-guard' }],
       [
         'create-record',
         {
@@ -948,6 +1292,9 @@ describe('slack proxy runner', () => {
             ],
           },
           slackRequestId: 'request-create-guard',
+          threadContextPatch: expect.objectContaining({
+            summary: '미래금융 회사를 생성했다.',
+          }),
         },
       ],
       [
@@ -980,6 +1327,29 @@ describe('slack proxy runner', () => {
 
         if (endpoint === 'get-tool-catalog') {
           return toolCatalogResponse;
+        }
+
+        if (endpoint === 'load-thread-context') {
+          return {
+            ok: true,
+            threadContext: {
+              threadKey: 'T1:C1:thread-3',
+              summaryJson: {
+                text: '',
+              },
+              recentTurnsJson: [],
+              contextJson: {
+                selectedCompanyIds: [],
+                selectedPersonIds: [],
+                selectedOpportunityIds: [],
+                selectedLicenseIds: [],
+                lastQuerySnapshot: null,
+              },
+              pendingApprovalJson: null,
+              lastSlackRequestId: null,
+              lastRepliedAt: null,
+            },
+          };
         }
 
         return { ok: true };

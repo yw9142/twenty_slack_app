@@ -31,6 +31,12 @@ type SlackRequestLookupInput = {
   id?: string;
 };
 
+type SlackRequestThreadLookupInput = {
+  slackTeamId: string;
+  slackChannelId: string;
+  slackThreadTs: string;
+};
+
 const parseJsonTextField = (
   value: unknown,
 ): Record<string, unknown> | null => {
@@ -196,6 +202,31 @@ export const buildSlackRequestLookupSelection = ({
   };
 };
 
+export const buildSlackRequestThreadLookupSelection = ({
+  slackTeamId,
+  slackChannelId,
+  slackThreadTs,
+}: SlackRequestThreadLookupInput) => ({
+  slackRequests: {
+    __args: {
+      filter: {
+        slackTeamId: {
+          eq: slackTeamId,
+        },
+        slackChannelId: {
+          eq: slackChannelId,
+        },
+        slackThreadTs: {
+          eq: slackThreadTs,
+        },
+      },
+    },
+    edges: {
+      node: slackRequestSelection,
+    },
+  },
+});
+
 export const findSlackRequestByDedupeKey = async (
   dedupeKey: string,
 ): Promise<SlackRequestRecord | null> => {
@@ -228,6 +259,35 @@ export const findSlackRequestById = async (
   );
 
   return mapSlackRequestNode(response.slackRequests?.edges[0]?.node);
+};
+
+export const findSlackRequestsByThread = async ({
+  slackTeamId,
+  slackChannelId,
+  slackThreadTs,
+}: SlackRequestThreadLookupInput): Promise<SlackRequestRecord[]> => {
+  const client = createCoreClient();
+  const response = await client.query<{
+    slackRequests?: {
+      edges: Array<{ node: Record<string, unknown> }>;
+    };
+  }>(
+    buildSlackRequestThreadLookupSelection({
+      slackTeamId,
+      slackChannelId,
+      slackThreadTs,
+    }),
+  );
+
+  return (response.slackRequests?.edges ?? [])
+    .map((edge) => mapSlackRequestNode(edge.node))
+    .filter((record): record is SlackRequestRecord => Boolean(record))
+    .sort((left, right) => {
+      const leftTime = left.lastProcessedAt ?? left.receivedAt ?? '';
+      const rightTime = right.lastProcessedAt ?? right.receivedAt ?? '';
+
+      return leftTime.localeCompare(rightTime);
+    });
 };
 
 export const createSlackRequest = async (

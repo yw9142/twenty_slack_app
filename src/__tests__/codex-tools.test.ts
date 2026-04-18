@@ -12,6 +12,8 @@ const {
   updateSlackRequest,
   postSlackReplyForRequest,
   previewApprovalAction,
+  loadOrCreateThreadContextForSlackRequest,
+  applyThreadContextPatchToSlackRequest,
 } = vi.hoisted(() => ({
   fetchCompanies: vi.fn(),
   fetchPeople: vi.fn(),
@@ -24,6 +26,8 @@ const {
   updateSlackRequest: vi.fn(),
   postSlackReplyForRequest: vi.fn(),
   previewApprovalAction: vi.fn(),
+  loadOrCreateThreadContextForSlackRequest: vi.fn(),
+  applyThreadContextPatchToSlackRequest: vi.fn(),
 }));
 
 vi.mock('src/utils/env', () => ({
@@ -62,6 +66,11 @@ vi.mock('src/utils/slack-api', () => ({
   postSlackReplyForRequest,
 }));
 
+vi.mock('src/utils/slack-thread-context-service', () => ({
+  loadOrCreateThreadContextForSlackRequest,
+  applyThreadContextPatchToSlackRequest,
+}));
+
 import {
   handleCreateRecordRoute,
   handleDeleteRecordRoute,
@@ -92,6 +101,23 @@ describe('codex tools', () => {
       resultJson: { ok: true },
     });
     postSlackReplyForRequest.mockResolvedValue(undefined);
+    loadOrCreateThreadContextForSlackRequest.mockResolvedValue({
+      id: 'thread-context-1',
+      threadKey: 'T1:C1:thread-1',
+      summaryJson: { text: '' },
+      recentTurnsJson: [],
+      contextJson: {
+        selectedCompanyIds: [],
+        selectedPersonIds: [],
+        selectedOpportunityIds: [],
+        selectedLicenseIds: [],
+        lastQuerySnapshot: null,
+      },
+      pendingApprovalJson: null,
+      lastSlackRequestId: null,
+      lastRepliedAt: null,
+    });
+    applyThreadContextPatchToSlackRequest.mockResolvedValue(undefined);
     fetchCompanies.mockResolvedValue([
       { id: 'company-1', name: 'A은행' },
       { id: 'company-2', name: '미래금융' },
@@ -204,6 +230,7 @@ describe('codex tools', () => {
     expect(toolCatalog.internalTools).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'get-tool-catalog' }),
+        expect.objectContaining({ name: 'load-thread-context' }),
         expect.objectContaining({ name: 'save-applied-result' }),
       ]),
     );
@@ -242,6 +269,29 @@ describe('codex tools', () => {
             succeeded: true,
           },
         },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '응답입니다.',
+            outcome: 'query',
+          },
+          summary: '조회 응답을 마쳤다.',
+          selectedEntities: {
+            companyIds: ['company-2'],
+          },
+          lastQuerySnapshot: {
+            requestId: 'request-1',
+            items: [
+              {
+                id: 'company-2',
+                kind: 'company',
+                label: '미래금융',
+                order: 0,
+                summary: null,
+              },
+            ],
+          },
+          pendingApproval: null,
+        },
       },
       headers: {
         'content-type': 'application/json',
@@ -259,6 +309,18 @@ describe('codex tools', () => {
             operation: 'query_answer',
           }),
         }),
+      }),
+    });
+    expect(applyThreadContextPatchToSlackRequest).toHaveBeenCalledWith({
+      slackRequest: expect.objectContaining({
+        id: 'request-1',
+      }),
+      patch: expect.objectContaining({
+        assistantTurn: expect.objectContaining({
+          text: '응답입니다.',
+          outcome: 'query',
+        }),
+        summary: '조회 응답을 마쳤다.',
       }),
     });
     expect(result).toEqual({

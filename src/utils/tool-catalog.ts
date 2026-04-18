@@ -128,6 +128,10 @@ const replyInputSchema = {
       type: 'object',
       additionalProperties: true,
     },
+    threadContextPatch: {
+      type: 'object',
+      additionalProperties: true,
+    },
   },
   required: ['slackRequestId', 'reply'],
 } as const;
@@ -248,6 +252,12 @@ export const TOOL_CATALOG: ToolCatalog = {
       },
     }),
     toolDescriptor({
+      name: 'load-thread-context',
+      description: 'Load or initialize the same-thread Slack memory for the runner',
+      policy: 'Internal runner bootstrap only.',
+      inputSchema: slackRequestIdInputSchema,
+    }),
+    toolDescriptor({
       name: 'save-query-answer',
       description: 'Persist a query answer and its diagnostics',
       policy: 'Internal runner persistence only.',
@@ -269,6 +279,10 @@ export const TOOL_CATALOG: ToolCatalog = {
             additionalProperties: true,
           },
           resultJson: {
+            type: 'object',
+            additionalProperties: true,
+          },
+          threadContextPatch: {
             type: 'object',
             additionalProperties: true,
           },

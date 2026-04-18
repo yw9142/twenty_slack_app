@@ -13,6 +13,45 @@ describe('codex runner failure modes', () => {
           };
         }
 
+        if (endpoint === 'get-tool-catalog') {
+          return {
+            toolCatalog: {
+              modelVisibleTools: [
+                {
+                  name: 'search-companies',
+                },
+              ],
+              internalTools: [
+                {
+                  name: 'load-thread-context',
+                },
+              ],
+            },
+          };
+        }
+
+        if (endpoint === 'load-thread-context') {
+          return {
+            threadContext: {
+              threadKey: 'T1:C1:thread-1',
+              summaryJson: {
+                text: '',
+              },
+              recentTurnsJson: [],
+              contextJson: {
+                selectedCompanyIds: [],
+                selectedPersonIds: [],
+                selectedOpportunityIds: [],
+                selectedLicenseIds: [],
+                lastQuerySnapshot: null,
+              },
+              pendingApprovalJson: null,
+              lastSlackRequestId: null,
+              lastRepliedAt: null,
+            },
+          };
+        }
+
         if (endpoint === 'search-companies') {
           return {
             ok: true,
@@ -45,6 +84,41 @@ describe('codex runner failure modes', () => {
           return {
             id: 'request-2',
             normalizedText: '미래금융 기회 추가',
+          };
+        }
+
+        if (endpoint === 'get-tool-catalog') {
+          return {
+            toolCatalog: {
+              modelVisibleTools: [],
+              internalTools: [
+                {
+                  name: 'load-thread-context',
+                },
+              ],
+            },
+          };
+        }
+
+        if (endpoint === 'load-thread-context') {
+          return {
+            threadContext: {
+              threadKey: 'T1:C1:thread-2',
+              summaryJson: {
+                text: '',
+              },
+              recentTurnsJson: [],
+              contextJson: {
+                selectedCompanyIds: [],
+                selectedPersonIds: [],
+                selectedOpportunityIds: [],
+                selectedLicenseIds: [],
+                lastQuerySnapshot: null,
+              },
+              pendingApprovalJson: null,
+              lastSlackRequestId: null,
+              lastRepliedAt: null,
+            },
           };
         }
 
@@ -85,7 +159,33 @@ describe('codex runner failure modes', () => {
             return {
               toolCatalog: {
                 modelVisibleTools: [],
-                internalTools: [],
+                internalTools: [
+                  {
+                    name: 'load-thread-context',
+                  },
+                ],
+              },
+            };
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              threadContext: {
+                threadKey: 'T1:C1:thread-3',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
               },
             };
           }
@@ -112,6 +212,7 @@ describe('codex runner failure modes', () => {
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-3' }],
       ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-3' }],
       [
         'mark-runner-error',
         {

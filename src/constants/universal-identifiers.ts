@@ -8,6 +8,8 @@ export const DEFAULT_ROLE_UNIVERSAL_IDENTIFIER =
 
 export const SLACK_REQUEST_OBJECT_UNIVERSAL_IDENTIFIER =
   'b23ecd32-8427-4cf5-8b05-90c44b069a3f';
+export const SLACK_THREAD_CONTEXT_OBJECT_UNIVERSAL_IDENTIFIER =
+  '754ae3dc-197f-4dd5-a3f9-88a4c14e6d03';
 
 export const SLACK_REQUEST_VIEW_UNIVERSAL_IDENTIFIER =
   '7a71014f-b8ec-41e7-a507-04f208ee065d';
@@ -46,6 +48,8 @@ export const NOTIFY_ADMIN_FUNCTION_UNIVERSAL_IDENTIFIER =
   'ee2dccb4-6a08-4cfe-96fe-81b6e77942ef';
 export const LOAD_SLACK_REQUEST_FUNCTION_UNIVERSAL_IDENTIFIER =
   '0d4f8fe5-2ef6-4a35-a4f5-05b79c8d2231';
+export const LOAD_THREAD_CONTEXT_FUNCTION_UNIVERSAL_IDENTIFIER =
+  '46b7a4de-bf1a-42a8-95cf-c92385fb956f';
 export const SEARCH_COMPANIES_FUNCTION_UNIVERSAL_IDENTIFIER =
   'fdc39e92-3dbe-4f76-8cc0-95d2da88b5d1';
 export const SEARCH_PEOPLE_FUNCTION_UNIVERSAL_IDENTIFIER =
@@ -110,4 +114,18 @@ export const SLACK_REQUEST_FIELD_UNIVERSAL_IDENTIFIERS = {
   approvedByWorkspaceMemberId: '31437966-8ce2-4d7a-815d-362323e0746f',
   receivedAt: 'aa64509e-e67b-40e3-80dd-7a6677dbad42',
   lastProcessedAt: '9b03e6b8-7086-4a65-808d-d4e3f7b7466f',
+} as const;
+
+export const SLACK_THREAD_CONTEXT_FIELD_UNIVERSAL_IDENTIFIERS = {
+  name: '030c52d7-3c92-47cf-84f6-557d4f467b85',
+  slackTeamId: '5370f37d-90e1-4433-9d57-6b961653bc89',
+  slackChannelId: '73529fd9-0d6b-4808-a97b-b855f4433f45',
+  slackThreadTs: '6df4f0b8-c1c2-498c-802c-11b5957493ea',
+  threadKey: '1b7157e7-2681-4523-8898-ddecc06d0f86',
+  summaryJson: 'ba7e8d09-e9f1-4ad9-bdab-23647d78ceeb',
+  recentTurnsJson: 'c23af1d9-8c6d-4ddf-b7d4-3cae805eeacf',
+  contextJson: 'd5cb6ebc-c5aa-4b7c-b696-62f8f67ea269',
+  pendingApprovalJson: '935b0c1f-39af-4c7c-ac5a-5d9d5f4dfc5c',
+  lastSlackRequestId: '52d2d3b3-b50d-4225-b137-c729b5f3ee4d',
+  lastRepliedAt: 'f2755d63-93d4-4431-b31d-b8d1c1003adf',
 } as const;

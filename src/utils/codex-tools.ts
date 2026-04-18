@@ -13,12 +13,22 @@ import {
   fetchPeople,
   fetchTasks,
 } from 'src/utils/crm-query';
-import type { CrmActionRecord, CrmWriteDraft, SlackReply } from 'src/types/slack-agent';
+import type {
+  CrmActionRecord,
+  CrmWriteDraft,
+  SlackReply,
+  SlackThreadContextPatch,
+  SlackThreadPendingApproval,
+} from 'src/types/slack-agent';
 import { postSlackReplyForRequest } from 'src/utils/slack-api';
 import {
   findSlackRequestById,
   updateSlackRequest,
 } from 'src/utils/slack-intake-service';
+import {
+  applyThreadContextPatchToSlackRequest,
+  loadOrCreateThreadContextForSlackRequest,
+} from 'src/utils/slack-thread-context-service';
 import { buildApprovalReply } from 'src/utils/slack-orchestrator';
 import { normalizeText } from 'src/utils/strings';
 import { getToolCatalog, isEntityKind } from 'src/utils/tool-catalog';
@@ -147,6 +157,239 @@ const getReply = (record: Record<string, unknown>): SlackReply | null => {
   }
 
   return null;
+};
+
+const toStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+
+const toPendingApproval = (value: unknown): SlackThreadPendingApproval | null => {
+  const record = toRecordValue(value);
+  const summary = typeof record?.summary === 'string' ? record.summary : null;
+  const sourceSlackRequestId =
+    typeof record?.sourceSlackRequestId === 'string'
+      ? record.sourceSlackRequestId
+      : null;
+  const actions = Array.isArray(record?.actions) ? record.actions : null;
+
+  if (!summary || !sourceSlackRequestId || !actions) {
+    return null;
+  }
+
+  const approvalRecord = record as NonNullable<typeof record>;
+
+  return {
+    sourceSlackRequestId,
+    summary,
+    actions: actions as SlackThreadPendingApproval['actions'],
+    review: toRecordValue(approvalRecord.review) as SlackThreadPendingApproval['review'],
+    status:
+      typeof approvalRecord.status === 'string'
+        ? (approvalRecord.status as SlackThreadPendingApproval['status'])
+        : null,
+  };
+};
+
+const getThreadContextPatch = (
+  record: Record<string, unknown>,
+): SlackThreadContextPatch | null => {
+  const patch = toRecordValue(record.threadContextPatch);
+  const assistantTurn = toRecordValue(patch?.assistantTurn);
+
+  if (!patch || !assistantTurn || typeof patch.summary !== 'string') {
+    return null;
+  }
+
+  const outcome = assistantTurn.outcome;
+
+  if (
+    typeof assistantTurn.text !== 'string' ||
+    (outcome !== 'query' &&
+      outcome !== 'write_draft' &&
+      outcome !== 'applied' &&
+      outcome !== 'rejected' &&
+      outcome !== 'system')
+  ) {
+    return null;
+  }
+
+  const selectedEntities = toRecordValue(patch.selectedEntities) ?? {};
+  const lastQuerySnapshot = toRecordValue(patch.lastQuerySnapshot);
+
+  return {
+    assistantTurn: {
+      text: assistantTurn.text,
+      outcome,
+    },
+    summary: patch.summary,
+    selectedEntities: {
+      ...(selectedEntities.companyIds
+        ? { companyIds: toStringArray(selectedEntities.companyIds) }
+        : {}),
+      ...(selectedEntities.personIds
+        ? { personIds: toStringArray(selectedEntities.personIds) }
+        : {}),
+      ...(selectedEntities.opportunityIds
+        ? { opportunityIds: toStringArray(selectedEntities.opportunityIds) }
+        : {}),
+      ...(selectedEntities.licenseIds
+        ? { licenseIds: toStringArray(selectedEntities.licenseIds) }
+        : {}),
+    },
+    ...('lastQuerySnapshot' in patch
+      ? {
+          lastQuerySnapshot: lastQuerySnapshot
+            ? ({
+                requestId:
+                  typeof lastQuerySnapshot.requestId === 'string'
+                    ? lastQuerySnapshot.requestId
+                    : '',
+                items: Array.isArray(lastQuerySnapshot.items)
+                  ? (lastQuerySnapshot.items as Array<Record<string, unknown>>).map(
+                      (item, index) => ({
+                        id: typeof item.id === 'string' ? item.id : '',
+                        kind:
+                          item.kind === 'company' ||
+                          item.kind === 'person' ||
+                          item.kind === 'opportunity' ||
+                          item.kind === 'license'
+                            ? item.kind
+                            : 'company',
+                        label: typeof item.label === 'string' ? item.label : '',
+                        order:
+                          typeof item.order === 'number' ? item.order : index,
+                        summary:
+                          typeof item.summary === 'string'
+                            ? item.summary
+                            : null,
+                      }),
+                    )
+                  : [],
+              } satisfies NonNullable<SlackThreadContextPatch['lastQuerySnapshot']>)
+            : null,
+        }
+      : {}),
+    ...('pendingApproval' in patch
+      ? {
+          pendingApproval:
+            patch.pendingApproval === null
+              ? null
+              : toPendingApproval(patch.pendingApproval),
+        }
+      : {}),
+  };
+};
+
+const buildFallbackQueryPatch = ({
+  slackRequestId,
+  reply,
+}: {
+  slackRequestId: string;
+  reply: SlackReply;
+}): SlackThreadContextPatch => ({
+  assistantTurn: {
+    text: reply.text,
+    outcome: 'query',
+  },
+  summary: reply.text,
+  selectedEntities: {},
+  lastQuerySnapshot: {
+    requestId: slackRequestId,
+    items: [],
+  },
+  pendingApproval: null,
+});
+
+const buildPendingApprovalFromDraft = ({
+  slackRequestId,
+  draft,
+}: {
+  slackRequestId: string;
+  draft: Record<string, unknown>;
+}): SlackThreadPendingApproval => ({
+  sourceSlackRequestId: slackRequestId,
+  summary: typeof draft.summary === 'string' ? draft.summary : '',
+  actions: Array.isArray(draft.actions)
+    ? (draft.actions as SlackThreadPendingApproval['actions'])
+    : [],
+  review: toRecordValue(draft.review) as SlackThreadPendingApproval['review'],
+  status: 'AWAITING_CONFIRMATION',
+});
+
+const buildFallbackWriteDraftPatch = ({
+  slackRequestId,
+  draft,
+}: {
+  slackRequestId: string;
+  draft: Record<string, unknown>;
+}): SlackThreadContextPatch => ({
+  assistantTurn: {
+    text: `CRM 반영 초안을 만들었습니다. ${
+      typeof draft.summary === 'string' ? draft.summary : ''
+    }`.trim(),
+    outcome: 'write_draft',
+  },
+  summary: typeof draft.summary === 'string' ? draft.summary : '',
+  selectedEntities: {},
+  lastQuerySnapshot: null,
+  pendingApproval: buildPendingApprovalFromDraft({
+    slackRequestId,
+    draft,
+  }),
+});
+
+const buildFallbackAppliedPatch = ({
+  reply,
+  resultJson,
+}: {
+  reply: SlackReply;
+  resultJson: Record<string, unknown>;
+}): SlackThreadContextPatch => {
+  const executedTools = Array.isArray(resultJson.executedTools)
+    ? resultJson.executedTools
+    : [];
+  const companyIds: string[] = [];
+  const personIds: string[] = [];
+  const opportunityIds: string[] = [];
+
+  for (const executedTool of executedTools) {
+    const actionResult = toRecordValue(
+      toRecordValue(toRecordValue(executedTool)?.result)?.actionResult,
+    );
+
+    if (
+      typeof actionResult?.id === 'string' &&
+      typeof actionResult.kind === 'string'
+    ) {
+      if (actionResult.kind === 'company') {
+        companyIds.push(actionResult.id);
+      }
+
+      if (actionResult.kind === 'person') {
+        personIds.push(actionResult.id);
+      }
+
+      if (actionResult.kind === 'opportunity') {
+        opportunityIds.push(actionResult.id);
+      }
+    }
+  }
+
+  return {
+    assistantTurn: {
+      text: reply.text,
+      outcome: 'applied',
+    },
+    summary: reply.text,
+    selectedEntities: {
+      ...(companyIds.length > 0 ? { companyIds } : {}),
+      ...(personIds.length > 0 ? { personIds } : {}),
+      ...(opportunityIds.length > 0 ? { opportunityIds } : {}),
+    },
+    lastQuerySnapshot: null,
+    pendingApproval: null,
+  };
 };
 
 const normalizeCompany = (company: Record<string, unknown>): Record<string, unknown> => ({
@@ -298,6 +541,40 @@ export const handleLoadSlackRequestRoute = async (
   return {
     ok: true,
     slackRequest,
+  };
+};
+
+export const handleLoadThreadContextRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const slackRequestId = getSlackRequestId(toRecord(event.body));
+
+  if (slackRequestId.length === 0) {
+    return {
+      ok: false,
+      message: 'slackRequestId is required',
+    };
+  }
+
+  const slackRequest = await findSlackRequestById(slackRequestId);
+
+  if (!slackRequest) {
+    return {
+      ok: false,
+      message: `Slack 요청 ${slackRequestId}를 찾지 못했습니다.`,
+    };
+  }
+
+  const threadContext =
+    await loadOrCreateThreadContextForSlackRequest(slackRequest);
+
+  return {
+    ok: true,
+    threadContext,
   };
 };
 
@@ -591,6 +868,12 @@ export const handleSaveQueryAnswerRoute = async (
   }
 
   const resultJson = toRecord(body.resultJson);
+  const threadContextPatch =
+    getThreadContextPatch(body) ??
+    buildFallbackQueryPatch({
+      slackRequestId,
+      reply,
+    });
   const updated = await updateSlackRequest({
     id: slackRequestId,
     data: {
@@ -599,6 +882,7 @@ export const handleSaveQueryAnswerRoute = async (
         current: slackRequest.resultJson,
         patch: {
           ...(resultJson ?? {}),
+          threadContextPatch,
           aiDiagnostics: getDiagnosticsPatch(resultJson),
           reply,
           processingTrace: {
@@ -609,6 +893,11 @@ export const handleSaveQueryAnswerRoute = async (
       }),
       lastProcessedAt: nowIso(),
     },
+  });
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest,
+    patch: threadContextPatch,
   });
 
   return {
@@ -653,6 +942,12 @@ export const handleSaveExecutionReportRoute = async (
   }
 
   const resultJson = toRecord(body.resultJson);
+  const threadContextPatch =
+    getThreadContextPatch(body) ??
+    buildFallbackAppliedPatch({
+      reply,
+      resultJson,
+    });
   const updated = await updateSlackRequest({
     id: slackRequestId,
     data: {
@@ -661,6 +956,7 @@ export const handleSaveExecutionReportRoute = async (
         current: slackRequest.resultJson,
         patch: {
           ...(resultJson ?? {}),
+          threadContextPatch,
           aiDiagnostics: getDiagnosticsPatch(resultJson),
           reply,
           processingTrace: {
@@ -671,6 +967,11 @@ export const handleSaveExecutionReportRoute = async (
       }),
       lastProcessedAt: nowIso(),
     },
+  });
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest,
+    patch: threadContextPatch,
   });
 
   return {
@@ -715,6 +1016,12 @@ export const handleSaveAppliedResultRoute = async (
   }
 
   const resultJson = toRecord(body.resultJson);
+  const threadContextPatch =
+    getThreadContextPatch(body) ??
+    buildFallbackAppliedPatch({
+      reply,
+      resultJson,
+    });
   const updated = await updateSlackRequest({
     id: slackRequestId,
     data: {
@@ -723,6 +1030,7 @@ export const handleSaveAppliedResultRoute = async (
         current: slackRequest.resultJson,
         patch: {
           ...(resultJson ?? {}),
+          threadContextPatch,
           aiDiagnostics: getDiagnosticsPatch(resultJson),
           reply,
           processingTrace: {
@@ -733,6 +1041,11 @@ export const handleSaveAppliedResultRoute = async (
       }),
       lastProcessedAt: nowIso(),
     },
+  });
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest,
+    patch: threadContextPatch,
   });
 
   return {
@@ -786,6 +1099,12 @@ export const handleSaveWriteDraftRoute = async (
   }
 
   const resultJson = toRecord(body.resultJson);
+  const threadContextPatch =
+    getThreadContextPatch(body) ??
+    buildFallbackWriteDraftPatch({
+      slackRequestId,
+      draft,
+    });
   const updated = await updateSlackRequest({
     id: slackRequestId,
     data: {
@@ -795,6 +1114,7 @@ export const handleSaveWriteDraftRoute = async (
         current: slackRequest.resultJson,
         patch: {
           ...(resultJson ?? {}),
+          threadContextPatch,
           aiDiagnostics: getDiagnosticsPatch(resultJson),
           processingTrace: {
             stage: 'WRITE_DRAFT_SAVED',
@@ -804,6 +1124,11 @@ export const handleSaveWriteDraftRoute = async (
       }),
       lastProcessedAt: nowIso(),
     },
+  });
+
+  await applyThreadContextPatchToSlackRequest({
+    slackRequest,
+    patch: threadContextPatch,
   });
 
   await postSlackReplyForRequest({
