@@ -81,6 +81,15 @@ describe('codex runner failure modes', () => {
             };
           }
 
+          if (endpoint === 'get-tool-catalog') {
+            return {
+              toolCatalog: {
+                modelVisibleTools: [],
+                internalTools: [],
+              },
+            };
+          }
+
           if (endpoint === 'mark-runner-error') {
             return {
               ok: true,
@@ -102,6 +111,7 @@ describe('codex runner failure modes', () => {
 
     expect(toolCalls).toEqual([
       ['load-slack-request', { slackRequestId: 'request-3' }],
+      ['get-tool-catalog', {}],
       [
         'mark-runner-error',
         {

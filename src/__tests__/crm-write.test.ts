@@ -307,4 +307,143 @@ describe('crm write helpers', () => {
     expect(taskPayload).not.toHaveProperty('companyId');
     expect(taskPayload).not.toHaveProperty('pointOfContactId');
   });
+
+  it('builds approval previews for delete actions from resolved records', async () => {
+    const { previewApprovalAction } = await import('src/utils/crm-write');
+
+    query.mockResolvedValueOnce({
+      companies: {
+        edges: [
+          {
+            node: {
+              id: 'company-1',
+              name: '미래금융',
+            },
+          },
+        ],
+      },
+    });
+
+    const preview = await previewApprovalAction({
+      kind: 'company',
+      operation: 'delete',
+      lookup: {
+        id: 'company-1',
+        name: '미래금융',
+      },
+      data: {},
+    });
+
+    expect(preview).toEqual({
+      action: {
+        kind: 'company',
+        operation: 'delete',
+        lookup: {
+          id: 'company-1',
+          name: '미래금융',
+        },
+        data: {},
+      },
+      matchedRecord: {
+        id: 'company-1',
+        label: '미래금융',
+      },
+      reviewItem: {
+        kind: 'company',
+        decision: 'DELETE',
+        target: '미래금융',
+        matchedRecord: '미래금융',
+        reason: '승인 후 실제 삭제가 실행됩니다.',
+        fields: [],
+      },
+    });
+  });
+
+  it('deletes matched records during approved draft application', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValueOnce({
+      deleteCompany: {
+        id: 'company-1',
+      },
+    });
+
+    const result = await applyApprovedDraft({
+      summary: '삭제 초안',
+      confidence: 0.95,
+      sourceText: '미래금융 삭제',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'delete',
+          lookup: {
+            id: 'company-1',
+            name: '미래금융',
+          },
+          data: {},
+        },
+      ],
+    });
+
+    expect(mutation).toHaveBeenCalledWith({
+      deleteCompany: {
+        __args: {
+          id: 'company-1',
+        },
+        id: true,
+      },
+    });
+    expect(result).toEqual({
+      created: [],
+      deleted: [{ kind: 'company', id: 'company-1' }],
+      errors: [],
+      skipped: [],
+      updated: [],
+    });
+  });
+
+  it('prefers targetId over lookup resolution when deleting', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    mutation.mockResolvedValueOnce({
+      deleteCompany: {
+        id: 'company-target',
+      },
+    });
+
+    const result = await applyApprovedDraft({
+      summary: '삭제 초안',
+      confidence: 0.95,
+      sourceText: '미래금융 삭제',
+      warnings: [],
+      actions: [
+        {
+          kind: 'company',
+          operation: 'delete',
+          targetId: 'company-target',
+          lookup: {
+            name: '미래금융',
+          },
+          data: {},
+        },
+      ],
+    });
+
+    expect(query).not.toHaveBeenCalled();
+    expect(mutation).toHaveBeenCalledWith({
+      deleteCompany: {
+        __args: {
+          id: 'company-target',
+        },
+        id: true,
+      },
+    });
+    expect(result.deleted).toEqual([
+      {
+        kind: 'company',
+        id: 'company-target',
+      },
+    ]);
+  });
 });

@@ -2,6 +2,10 @@ import type { RoutePayload } from 'twenty-sdk';
 
 import { getToolSharedSecret } from 'src/utils/env';
 import {
+  executeImmediateCreateAction,
+  previewApprovalAction,
+} from 'src/utils/crm-write';
+import {
   fetchCompanies,
   fetchLicenses,
   fetchNotes,
@@ -9,7 +13,7 @@ import {
   fetchPeople,
   fetchTasks,
 } from 'src/utils/crm-query';
-import type { CrmWriteDraft, SlackReply } from 'src/types/slack-agent';
+import type { CrmActionRecord, CrmWriteDraft, SlackReply } from 'src/types/slack-agent';
 import { postSlackReplyForRequest } from 'src/utils/slack-api';
 import {
   findSlackRequestById,
@@ -17,6 +21,7 @@ import {
 } from 'src/utils/slack-intake-service';
 import { buildApprovalReply } from 'src/utils/slack-orchestrator';
 import { normalizeText } from 'src/utils/strings';
+import { getToolCatalog, isEntityKind } from 'src/utils/tool-catalog';
 
 type RouteBody = Record<string, unknown> | string | null;
 
@@ -230,6 +235,41 @@ const filterBySearch = <TRecord extends Record<string, unknown>>(
 const getSearchQuery = (event: ToolRoutePayload): string =>
   toStringValue(toRecord(event.body), 'query');
 
+const getActionRecord = (
+  record: Record<string, unknown>,
+): CrmActionRecord | null => {
+  const action = toRecordValue(record.action);
+  const kind = action
+    ? toStringValue(action, 'kind') || toStringValue(record, 'kind')
+    : toStringValue(record, 'kind');
+  const operation = action
+    ? toStringValue(action, 'operation') || toStringValue(record, 'operation')
+    : toStringValue(record, 'operation');
+  const data = action
+    ? toRecordValue(action.data) ?? toRecordValue(record.data)
+    : toRecordValue(record.data);
+  const lookup = action
+    ? toRecordValue(action.lookup) ?? toRecordValue(record.lookup)
+    : toRecordValue(record.lookup);
+  const targetId = action
+    ? toStringValue(action, 'targetId') || toStringValue(record, 'targetId')
+    : toStringValue(record, 'targetId');
+
+  if (!isEntityKind(kind) || operation.length === 0) {
+    return null;
+  }
+
+  return {
+    kind,
+    operation: operation as CrmActionRecord['operation'],
+    data: data ?? {},
+    ...(targetId.length > 0 ? { targetId } : {}),
+    ...(lookup ? { lookup: Object.fromEntries(
+      Object.entries(lookup).filter(([, value]) => typeof value === 'string'),
+    ) as Record<string, string> } : {}),
+  };
+};
+
 export const handleLoadSlackRequestRoute = async (
   event: ToolRoutePayload,
 ): Promise<Record<string, unknown>> => {
@@ -258,6 +298,19 @@ export const handleLoadSlackRequestRoute = async (
   return {
     ok: true,
     slackRequest,
+  };
+};
+
+export const handleGetToolCatalogRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  return {
+    ok: true,
+    toolCatalog: getToolCatalog(),
   };
 };
 
@@ -394,6 +447,115 @@ export const handleSearchActivitiesRoute = async (
   };
 };
 
+export const handleCreateRecordRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const action = getActionRecord({
+    ...toRecord(event.body),
+    operation: 'create',
+  });
+
+  if (!action || action.operation !== 'create') {
+    return {
+      ok: false,
+      message: 'create action is required',
+    };
+  }
+
+  const actionResult = await executeImmediateCreateAction(action);
+
+  return {
+    ok: true,
+    actionResult,
+  };
+};
+
+export const handlePreviewRecordActionRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const action = getActionRecord(toRecord(event.body));
+
+  if (!action || (action.operation !== 'update' && action.operation !== 'delete')) {
+    return {
+      ok: false,
+      message: 'update or delete action is required',
+    };
+  }
+
+  const preview = await previewApprovalAction(action);
+
+  return {
+    ok: true,
+    preview,
+  };
+};
+
+export const handleUpdateRecordRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const action = getActionRecord({
+    ...toRecord(event.body),
+    operation: 'update',
+  });
+
+  if (!action) {
+    return {
+      ok: false,
+      message: 'update action is required',
+    };
+  }
+
+  const preview = await previewApprovalAction(action);
+
+  return {
+    ok: true,
+    plannedAction: preview.action,
+    matchedRecord: preview.matchedRecord,
+    reviewItem: preview.reviewItem,
+  };
+};
+
+export const handleDeleteRecordRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const action = getActionRecord({
+    ...toRecord(event.body),
+    operation: 'delete',
+  });
+
+  if (!action) {
+    return {
+      ok: false,
+      message: 'delete action is required',
+    };
+  }
+
+  const preview = await previewApprovalAction(action);
+
+  return {
+    ok: true,
+    plannedAction: preview.action,
+    matchedRecord: preview.matchedRecord,
+    reviewItem: preview.reviewItem,
+  };
+};
+
 export const handleSaveQueryAnswerRoute = async (
   event: ToolRoutePayload,
 ): Promise<Record<string, unknown>> => {
@@ -441,6 +603,130 @@ export const handleSaveQueryAnswerRoute = async (
           reply,
           processingTrace: {
             stage: 'QUERY_ANSWER_SAVED',
+            updatedAt: nowIso(),
+          },
+        },
+      }),
+      lastProcessedAt: nowIso(),
+    },
+  });
+
+  return {
+    ok: true,
+    slackRequestId: updated.id,
+    processingStatus: updated.processingStatus,
+  };
+};
+
+export const handleSaveExecutionReportRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const body = toRecord(event.body);
+  const slackRequestId = getSlackRequestId(body);
+  const reply = getReply(body);
+
+  if (slackRequestId.length === 0) {
+    return {
+      ok: false,
+      message: 'slackRequestId is required',
+    };
+  }
+
+  if (!reply) {
+    return {
+      ok: false,
+      message: 'reply is required',
+    };
+  }
+
+  const slackRequest = await findSlackRequestById(slackRequestId);
+
+  if (!slackRequest) {
+    return {
+      ok: false,
+      message: `Slack 요청 ${slackRequestId}를 찾지 못했습니다.`,
+    };
+  }
+
+  const resultJson = toRecord(body.resultJson);
+  const updated = await updateSlackRequest({
+    id: slackRequestId,
+    data: {
+      processingStatus: 'APPLIED',
+      resultJson: mergeResultJson({
+        current: slackRequest.resultJson,
+        patch: {
+          ...(resultJson ?? {}),
+          aiDiagnostics: getDiagnosticsPatch(resultJson),
+          reply,
+          processingTrace: {
+            stage: 'EXECUTION_REPORT_SAVED',
+            updatedAt: nowIso(),
+          },
+        },
+      }),
+      lastProcessedAt: nowIso(),
+    },
+  });
+
+  return {
+    ok: true,
+    slackRequestId: updated.id,
+    processingStatus: updated.processingStatus,
+  };
+};
+
+export const handleSaveAppliedResultRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const body = toRecord(event.body);
+  const slackRequestId = getSlackRequestId(body);
+  const reply = getReply(body);
+
+  if (slackRequestId.length === 0) {
+    return {
+      ok: false,
+      message: 'slackRequestId is required',
+    };
+  }
+
+  if (!reply) {
+    return {
+      ok: false,
+      message: 'reply is required',
+    };
+  }
+
+  const slackRequest = await findSlackRequestById(slackRequestId);
+
+  if (!slackRequest) {
+    return {
+      ok: false,
+      message: `Slack 요청 ${slackRequestId}를 찾지 못했습니다.`,
+    };
+  }
+
+  const resultJson = toRecord(body.resultJson);
+  const updated = await updateSlackRequest({
+    id: slackRequestId,
+    data: {
+      processingStatus: 'APPLIED',
+      resultJson: mergeResultJson({
+        current: slackRequest.resultJson,
+        patch: {
+          ...(resultJson ?? {}),
+          aiDiagnostics: getDiagnosticsPatch(resultJson),
+          reply,
+          processingTrace: {
+            stage: 'APPLIED_RESULT_SAVED',
             updatedAt: nowIso(),
           },
         },

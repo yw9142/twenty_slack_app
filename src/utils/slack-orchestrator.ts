@@ -23,25 +23,41 @@ import { postSlackReplyForRequest } from 'src/utils/slack-api';
 
 const nowIso = (): string => new Date().toISOString();
 
-const formatDecision = (decision: 'CREATE' | 'UPDATE' | 'SKIP'): string =>
-  decision === 'UPDATE' ? '기존 레코드 업데이트' : decision === 'SKIP' ? '반영 보류' : '신규 생성';
+const formatDecision = (
+  decision: 'CREATE' | 'UPDATE' | 'DELETE' | 'SKIP',
+): string =>
+  decision === 'UPDATE'
+    ? '기존 레코드 업데이트'
+    : decision === 'DELETE'
+      ? '기존 레코드 삭제'
+      : decision === 'SKIP'
+        ? '반영 보류'
+        : '신규 생성';
 
 const buildFallbackReview = (draft: CrmWriteDraft) => ({
   overview: draft.summary,
   opinion:
-    draft.warnings[0] ?? '승인 전에 생성/업데이트 대상과 필드를 한 번 더 확인하세요.',
+    draft.warnings[0] ??
+    '승인 전에 생성/수정/삭제 대상과 필드를 한 번 더 확인하세요.',
   items: draft.actions.map((action) => ({
     kind: action.kind,
-    decision: (action.operation === 'update' ? 'UPDATE' : 'CREATE') as
+    decision: (
+      action.operation === 'update'
+        ? 'UPDATE'
+        : action.operation === 'delete'
+          ? 'DELETE'
+          : 'CREATE'
+    ) as
       | 'UPDATE'
+      | 'DELETE'
       | 'CREATE',
     target:
       typeof action.data.title === 'string'
         ? action.data.title
         : typeof action.data.name === 'string'
           ? action.data.name
-          : action.lookup?.name ?? action.kind,
-    matchedRecord: action.lookup?.name ?? null,
+          : action.lookup?.name ?? action.lookup?.id ?? action.targetId ?? action.kind,
+    matchedRecord: action.lookup?.name ?? action.lookup?.id ?? action.targetId ?? null,
     reason: null,
     fields: Object.entries(action.data)
       .filter(([, value]) => typeof value === 'string' || typeof value === 'number')

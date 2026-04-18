@@ -4,17 +4,25 @@ import type {
   BasicOpportunityRecord,
   BasicPersonRecord,
   CrmActionRecord,
+  DraftReviewItem,
   CrmWriteDraft,
   EntityKind,
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
-import { fetchCompanies, fetchOpportunities, fetchPeople } from 'src/utils/crm-query';
+import {
+  fetchCompanies,
+  fetchNotes,
+  fetchOpportunities,
+  fetchPeople,
+  fetchTasks,
+} from 'src/utils/crm-query';
 import { toRichTextValue } from 'src/utils/rich-text';
 import { normalizeText, splitFullName, toTitleCaseKey } from 'src/utils/strings';
 
 type EntityConfig = {
   queryRoot: string;
   createMutation: string;
+  deleteMutation: string;
   updateMutation: string;
   idField: string;
 };
@@ -23,54 +31,63 @@ const ENTITY_CONFIG: Record<EntityKind, EntityConfig> = {
   company: {
     queryRoot: 'companies',
     createMutation: 'createCompany',
+    deleteMutation: 'deleteCompany',
     updateMutation: 'updateCompany',
     idField: 'id',
   },
   person: {
     queryRoot: 'people',
     createMutation: 'createPerson',
+    deleteMutation: 'deletePerson',
     updateMutation: 'updatePerson',
     idField: 'id',
   },
   opportunity: {
     queryRoot: 'opportunities',
     createMutation: 'createOpportunity',
+    deleteMutation: 'deleteOpportunity',
     updateMutation: 'updateOpportunity',
     idField: 'id',
   },
   solution: {
     queryRoot: 'solutions',
     createMutation: 'createSolution',
+    deleteMutation: 'deleteSolution',
     updateMutation: 'updateSolution',
     idField: 'id',
   },
   companyRelationship: {
     queryRoot: 'companyRelationships',
     createMutation: 'createCompanyRelationship',
+    deleteMutation: 'deleteCompanyRelationship',
     updateMutation: 'updateCompanyRelationship',
     idField: 'id',
   },
   opportunityStakeholder: {
     queryRoot: 'opportunityStakeholders',
     createMutation: 'createOpportunityStakeholder',
+    deleteMutation: 'deleteOpportunityStakeholder',
     updateMutation: 'updateOpportunityStakeholder',
     idField: 'id',
   },
   opportunitySolution: {
     queryRoot: 'opportunitySolutions',
     createMutation: 'createOpportunitySolution',
+    deleteMutation: 'deleteOpportunitySolution',
     updateMutation: 'updateOpportunitySolution',
     idField: 'id',
   },
   note: {
     queryRoot: 'notes',
     createMutation: 'createNote',
+    deleteMutation: 'deleteNote',
     updateMutation: 'updateNote',
     idField: 'id',
   },
   task: {
     queryRoot: 'tasks',
     createMutation: 'createTask',
+    deleteMutation: 'deleteTask',
     updateMutation: 'updateTask',
     idField: 'id',
   },
@@ -295,7 +312,19 @@ const findRecordIdByLookup = async (
   action: CrmActionRecord,
 ): Promise<string | null> => {
   if (!action.lookup) {
-    return null;
+    return normalizeLookupValue(action.targetId) ?? null;
+  }
+
+  const explicitTargetId = normalizeLookupValue(action.targetId);
+
+  if (explicitTargetId) {
+    return explicitTargetId;
+  }
+
+  const explicitId = normalizeLookupValue(action.lookup.id);
+
+  if (explicitId) {
+    return explicitId;
   }
 
   if (action.kind === 'company') {
@@ -399,11 +428,112 @@ const updateRecord = async ({
   return updated.id;
 };
 
+const deleteRecord = async ({
+  kind,
+  id,
+}: {
+  kind: EntityKind;
+  id: string;
+}): Promise<string> => {
+  const client = createCoreClient();
+  const config = ENTITY_CONFIG[kind];
+  const mutationName = config.deleteMutation;
+  const response = await client.mutation<Record<string, unknown>>({
+    [mutationName]: {
+      __args: {
+        id,
+      },
+      id: true,
+    },
+  });
+
+  const deleted = response[mutationName];
+
+  if (
+    !deleted ||
+    typeof deleted !== 'object' ||
+    !('id' in deleted) ||
+    typeof deleted.id !== 'string'
+  ) {
+    throw new Error(`Failed to delete ${kind} ${id}`);
+  }
+
+  return deleted.id;
+};
+
 const createResolvedEntityMaps = (): ResolvedEntityMaps => ({
   companyIdsByName: new Map<string, string>(),
   personIdsByKey: new Map<string, string>(),
   opportunityIdsByName: new Map<string, string>(),
 });
+
+const buildReviewFields = (
+  data: Record<string, unknown>,
+): DraftReviewItem['fields'] =>
+  Object.entries(data)
+    .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
+    .slice(0, 6)
+    .map(([key, value]) => ({
+      key,
+      value: String(value),
+    }));
+
+const findMatchedRecordLabel = async ({
+  action,
+  recordId,
+}: {
+  action: CrmActionRecord;
+  recordId: string;
+}): Promise<string | null> => {
+  if (action.kind === 'company') {
+    const companies = await fetchCompanies();
+
+    return (
+      companies.find((company) => company.id === recordId)?.name ??
+      normalizeLookupValue(action.lookup?.name)
+    );
+  }
+
+  if (action.kind === 'person') {
+    const people = await fetchPeople();
+
+    return (
+      people.find((person) => person.id === recordId)?.fullName ??
+      normalizeLookupValue(action.lookup?.name)
+    );
+  }
+
+  if (action.kind === 'opportunity') {
+    const opportunities = await fetchOpportunities();
+
+    return (
+      opportunities.find((opportunity) => opportunity.id === recordId)?.name ??
+      normalizeLookupValue(action.lookup?.name)
+    );
+  }
+
+  if (action.kind === 'note') {
+    const notes = await fetchNotes();
+
+    return (
+      notes.find((note) => note.id === recordId)?.title ??
+      normalizeLookupValue(action.lookup?.title) ??
+      normalizeLookupValue(action.lookup?.name)
+    );
+  }
+
+  if (action.kind === 'task') {
+    const tasks = await fetchTasks();
+
+    return (
+      tasks.find((task) => task.id === recordId)?.title ??
+      normalizeLookupValue(action.lookup?.title) ??
+      normalizeLookupValue(action.lookup?.name)
+    );
+  }
+
+  return normalizeLookupValue(action.lookup?.name) ?? recordId;
+};
 
 const rememberResolvedRecord = ({
   resolved,
@@ -619,6 +749,102 @@ const createSupportingTargets = async ({
   }
 };
 
+export const executeImmediateCreateAction = async (
+  action: CrmActionRecord,
+): Promise<{ kind: EntityKind; operation: 'create'; id: string }> => {
+  if (action.operation !== 'create') {
+    throw new Error('Immediate create actions only support operation=create');
+  }
+
+  const resolved = createResolvedEntityMaps();
+  const id = await createRecord({
+    kind: action.kind,
+    data: action.data,
+    resolved,
+  });
+
+  rememberResolvedRecord({
+    resolved,
+    action,
+    id,
+  });
+
+  if (action.kind === 'note' || action.kind === 'task') {
+    await createSupportingTargets({
+      kind: action.kind,
+      recordId: id,
+      data: action.data,
+      resolved,
+    });
+  }
+
+  return {
+    kind: action.kind,
+    operation: 'create',
+    id,
+  };
+};
+
+export const previewApprovalAction = async (
+  action: CrmActionRecord,
+): Promise<{
+  action: CrmActionRecord;
+  matchedRecord: { id: string; label: string | null } | null;
+  reviewItem: DraftReviewItem;
+}> => {
+  if (action.operation !== 'update' && action.operation !== 'delete') {
+    throw new Error('Approval previews only support update or delete actions');
+  }
+
+  const recordId = await findRecordIdByLookup(action);
+  const matchedLabel = recordId
+    ? await findMatchedRecordLabel({
+        action,
+        recordId,
+      })
+    : null;
+  const normalizedLookup = {
+    ...(action.lookup ?? {}),
+    ...(recordId ? { id: recordId } : {}),
+  };
+  const normalizedAction: CrmActionRecord = {
+    ...action,
+    lookup: Object.keys(normalizedLookup).length > 0 ? normalizedLookup : undefined,
+    data: action.data ?? {},
+  };
+
+  return {
+    action: normalizedAction,
+    matchedRecord: recordId
+      ? {
+          id: recordId,
+          label: matchedLabel,
+        }
+      : null,
+    reviewItem: {
+      kind: action.kind,
+      decision: recordId
+        ? action.operation === 'delete'
+          ? 'DELETE'
+          : 'UPDATE'
+        : 'SKIP',
+      target:
+        matchedLabel ??
+        normalizeLookupValue(action.lookup?.name) ??
+        normalizeLookupValue(action.lookup?.title) ??
+        recordId ??
+        action.kind,
+      matchedRecord: matchedLabel,
+      reason: recordId
+        ? action.operation === 'delete'
+          ? '승인 후 실제 삭제가 실행됩니다.'
+          : null
+        : '기존 레코드를 찾지 못해 승인 시 반영이 건너뛸 수 있습니다.',
+      fields: action.operation === 'delete' ? [] : buildReviewFields(action.data ?? {}),
+    },
+  };
+};
+
 export const createOperationalTask = async ({
   title,
   body,
@@ -640,6 +866,7 @@ export const applyApprovedDraft = async (
 ): Promise<ApplyDraftResult> => {
   const result: ApplyDraftResult = {
     created: [],
+    deleted: [],
     updated: [],
     skipped: [],
     errors: [],
@@ -651,6 +878,28 @@ export const applyApprovedDraft = async (
 
   for (const action of orderedActions) {
     try {
+      if (action.operation === 'delete') {
+        const recordId = await findRecordIdByLookup(action);
+
+        if (!recordId) {
+          result.skipped.push(
+            `${action.kind} delete skipped because no existing record matched the lookup.`,
+          );
+          continue;
+        }
+
+        const id = await deleteRecord({
+          kind: action.kind,
+          id: recordId,
+        });
+
+        result.deleted.push({
+          kind: action.kind,
+          id,
+        });
+        continue;
+      }
+
       if (action.operation === 'update') {
         const recordId = await findRecordIdByLookup(action);
 
@@ -761,6 +1010,7 @@ export const applyApprovedDraft = async (
 
 export const summarizeApplyResult = (result: ApplyDraftResult): string => {
   const createdCount = result.created.length;
+  const deletedCount = result.deleted.length;
   const updatedCount = result.updated.length;
   const skippedCount = result.skipped.length;
   const errorCount = result.errors.length;
@@ -768,6 +1018,7 @@ export const summarizeApplyResult = (result: ApplyDraftResult): string => {
   return [
     `생성 ${createdCount}건`,
     `수정 ${updatedCount}건`,
+    `삭제 ${deletedCount}건`,
     `건너뜀 ${skippedCount}건`,
     `오류 ${errorCount}건`,
   ].join(', ');
@@ -777,13 +1028,14 @@ export const buildApplyResultJson = (
   result: ApplyDraftResult,
 ): Record<string, unknown> => ({
   created: result.created,
+  deleted: result.deleted,
   updated: result.updated,
   skipped: result.skipped,
   errors: result.errors,
 });
 
 export const toMutationName = (
-  operation: 'create' | 'update',
+  operation: 'create' | 'update' | 'delete',
   kind: EntityKind,
 ): string => `${operation}${toTitleCaseKey(kind)}`;
 

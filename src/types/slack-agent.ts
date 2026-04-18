@@ -15,7 +15,7 @@ export type EntityKind =
   | 'note'
   | 'task';
 
-export type EntityOperation = 'create' | 'update';
+export type EntityOperation = 'create' | 'update' | 'delete';
 
 export type EntityHints = {
   companies: string[];
@@ -60,6 +60,7 @@ export type SlackIntentClassification = {
 export type CrmActionRecord = {
   kind: EntityKind;
   operation: EntityOperation;
+  targetId?: string;
   lookup?: Record<string, string>;
   data: Record<string, unknown>;
 };
@@ -71,7 +72,7 @@ export type DraftReviewField = {
 
 export type DraftReviewItem = {
   kind: EntityKind;
-  decision: 'CREATE' | 'UPDATE' | 'SKIP';
+  decision: 'CREATE' | 'UPDATE' | 'DELETE' | 'SKIP';
   target: string;
   matchedRecord?: string | null;
   reason?: string | null;
@@ -206,6 +207,7 @@ export type BasicNoteRecord = {
 
 export type ApplyDraftResult = {
   created: Array<{ kind: EntityKind; id: string }>;
+  deleted: Array<{ kind: EntityKind; id: string }>;
   updated: Array<{ kind: EntityKind; id: string }>;
   skipped: string[];
   errors: string[];

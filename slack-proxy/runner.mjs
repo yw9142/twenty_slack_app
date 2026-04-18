@@ -7,23 +7,17 @@ import { normalizeBaseUrl } from './lib.mjs';
 
 const DEFAULT_MAX_STEPS = 8;
 
-const READ_ONLY_TOOL_NAMES = [
-  'load-slack-request',
-  'search-companies',
-  'search-people',
-  'search-opportunities',
-  'search-licenses',
-  'search-activities',
-];
-
+const TOOL_CATALOG_ENDPOINT = 'get-tool-catalog';
+const SAVE_APPLIED_RESULT_ENDPOINT = 'save-applied-result';
 const INTERNAL_ONLY_TOOL_NAMES = [
+  'load-slack-request',
+  TOOL_CATALOG_ENDPOINT,
   'save-query-answer',
   'save-write-draft',
+  SAVE_APPLIED_RESULT_ENDPOINT,
   'mark-runner-error',
   'post-slack-reply',
 ];
-
-const ALLOWED_TOOL_NAMES = new Set(READ_ONLY_TOOL_NAMES);
 
 const stripCodeFence = (value) => {
   const trimmed = value.trim();
@@ -54,17 +48,28 @@ const normalizeDecision = (decision) => {
   }
 
   if (decision.kind === 'tool_call') {
-    if (typeof decision.endpoint !== 'string' || decision.endpoint.length === 0) {
-      throw new Error('Codex tool call is missing an endpoint');
+    const toolName =
+      typeof decision.toolName === 'string'
+        ? decision.toolName
+        : typeof decision.endpoint === 'string'
+          ? decision.endpoint
+          : typeof decision.tool === 'string'
+            ? decision.tool
+            : '';
+
+    if (toolName.length === 0) {
+      throw new Error('Codex tool call is missing a tool name');
     }
 
     return {
       kind: 'tool_call',
-      endpoint: decision.endpoint,
+      toolName,
       payload:
-        decision.payload && typeof decision.payload === 'object'
-          ? decision.payload
-          : {},
+        decision.input && typeof decision.input === 'object'
+          ? decision.input
+          : decision.payload && typeof decision.payload === 'object'
+            ? decision.payload
+            : {},
     };
   }
 
@@ -72,7 +77,7 @@ const normalizeDecision = (decision) => {
     const mode = decision.mode ?? (decision.draft ? 'write_draft' : 'query');
     const message = decision.message ?? decision.answer ?? '';
 
-    if (mode !== 'query' && mode !== 'write_draft') {
+    if (mode !== 'query' && mode !== 'write_draft' && mode !== 'applied') {
       throw new Error(`Unsupported Codex final mode: ${mode}`);
     }
 
@@ -105,11 +110,15 @@ const normalizeDecision = (decision) => {
     };
   }
 
-  if (typeof decision.endpoint === 'string') {
+  if (
+    typeof decision.toolName === 'string' ||
+    typeof decision.endpoint === 'string' ||
+    typeof decision.tool === 'string'
+  ) {
     return normalizeDecision({
       kind: 'tool_call',
-      endpoint: decision.endpoint,
-      payload: decision.payload,
+      toolName: decision.toolName ?? decision.endpoint ?? decision.tool,
+      input: decision.input ?? decision.payload,
     });
   }
 
@@ -119,22 +128,64 @@ const normalizeDecision = (decision) => {
 export const buildCodexPrompt = ({
   slackRequestId,
   slackRequest,
+  toolCatalog,
   history,
-}) => {
-  return [
+}) =>
+  [
     'You are a Slack-to-Twenty CRM orchestration agent.',
-    'Use exactly one tool at a time.',
-    'Start by reading the provided request context.',
-    `You may only call these read tools: ${READ_ONLY_TOOL_NAMES.join(', ')}.`,
-    `The following tools are internal-only and must not be called directly: ${INTERNAL_ONLY_TOOL_NAMES.join(', ')}.`,
-    'For read-only questions, end with {"kind":"final","mode":"query","message":"..."}.',
-    'For write requests, end with {"kind":"final","mode":"write_draft","message":"...","draft":{...}}.',
-    'Never claim to have executed a tool unless the history shows it.',
-    'Request context:',
+    'Use the structured tool catalog below. Call only modelVisibleTools.',
+    'Internal tools are runner-only and must never be called directly.',
+    'Policy:',
+    '- Query/list/report requests must use at least one search-* tool before a final query answer.',
+    '- When the user wants a broad list or report without explicit filters, call the relevant search-* tool with {"query": ""}.',
+    '- Create requests may execute create-record immediately. After execution, finish with mode="applied".',
+    '- Update and delete requests must use update-record or delete-record to capture the exact target, then finish with mode="write_draft" for Slack approval.',
+    `Internal-only tools that you must never call directly: ${INTERNAL_ONLY_TOOL_NAMES.join(', ')}.`,
+    'Return exactly one JSON object in one of these shapes:',
+    JSON.stringify(
+      [
+        {
+          kind: 'tool_call',
+          toolName: '<tool name>',
+          input: {},
+        },
+        {
+          kind: 'final',
+          mode: 'query',
+          message: '<slack reply text>',
+        },
+        {
+          kind: 'final',
+          mode: 'write_draft',
+          message: '<approval summary text>',
+          draft: {
+            summary: '<short summary>',
+            confidence: 0.0,
+            sourceText: '<original request>',
+            actions: [],
+            warnings: [],
+          },
+        },
+        {
+          kind: 'final',
+          mode: 'applied',
+          message: '<slack reply text after immediate create execution>',
+        },
+        {
+          kind: 'error',
+          message: '<error text>',
+        },
+      ],
+      null,
+      2,
+    ),
+    'Tool catalog:',
+    serializeToolCatalogForPrompt(toolCatalog),
+    'Request context and prior tool history:',
     JSON.stringify({ slackRequestId, slackRequest, history }, null, 2),
+    'Never claim that tools are unavailable or cannot be called.',
     'Return only valid JSON.',
   ].join('\n');
-};
 
 export const createCodexCliDecisionRunner = ({
   codexBinary = process.env.CODEX_BINARY ?? 'codex',
@@ -261,6 +312,423 @@ const getFailureMessage = (value, fallbackMessage) =>
     ? value.message
     : fallbackMessage;
 
+const unwrapSlackRequestRecord = (value) => {
+  if (
+    value &&
+    typeof value === 'object' &&
+    value.slackRequest &&
+    typeof value.slackRequest === 'object'
+  ) {
+    return value.slackRequest;
+  }
+
+  return value;
+};
+
+const getRequestText = (slackRequest) => {
+  if (!slackRequest || typeof slackRequest !== 'object') {
+    return '';
+  }
+
+  if (typeof slackRequest.normalizedText === 'string') {
+    return slackRequest.normalizedText;
+  }
+
+  if (typeof slackRequest.rawText === 'string') {
+    return slackRequest.rawText;
+  }
+
+  return '';
+};
+
+const toPlainRecord = (value) =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+
+const unwrapToolCatalogRecord = (value) => {
+  const record = toPlainRecord(value);
+
+  if (!record) {
+    return null;
+  }
+
+  if (toPlainRecord(record.toolCatalog)) {
+    return record.toolCatalog;
+  }
+
+  if (toPlainRecord(record.catalog)) {
+    return record.catalog;
+  }
+
+  return record;
+};
+
+const toStringValue = (value) =>
+  typeof value === 'string' ? value.trim() : '';
+
+const normalizeToolDescriptor = (value, fallbackVisibility = '') => {
+  if (typeof value === 'string') {
+    return {
+      name: value,
+      description: '',
+      policy: '',
+      inputSchema: null,
+      visibility: fallbackVisibility,
+    };
+  }
+
+  const record = toPlainRecord(value);
+
+  if (!record) {
+    return null;
+  }
+
+  return {
+    name:
+      toStringValue(record.name) ||
+      toStringValue(record.endpoint) ||
+      toStringValue(record.toolName),
+    description:
+      toStringValue(record.description) || toStringValue(record.summary),
+    policy:
+      toStringValue(record.policy) ||
+      toStringValue(record.policyText) ||
+      toStringValue(record.executionPolicy),
+    inputSchema:
+      record.inputSchema ??
+      record.toolInputSchema ??
+      record.schema ??
+      record.parameters ??
+      null,
+    visibility:
+      toStringValue(record.visibility) ||
+      toStringValue(record.accessLevel) ||
+      fallbackVisibility,
+  };
+};
+
+const normalizeToolDescriptorList = (value, fallbackVisibility = '') => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeToolDescriptor(item, fallbackVisibility))
+    .filter((item) => Boolean(item && item.name.length > 0));
+};
+
+const normalizeToolCatalog = (value) => {
+  const record = unwrapToolCatalogRecord(value);
+
+  return {
+    modelVisibleTools: normalizeToolDescriptorList(
+      record?.modelVisibleTools ?? record?.modelTools ?? record?.tools,
+      'model_visible',
+    ),
+    internalTools: normalizeToolDescriptorList(
+      record?.internalTools ?? record?.runnerOnlyTools,
+      'internal',
+    ),
+  };
+};
+
+const serializeToolCatalogForPrompt = (toolCatalog) =>
+  JSON.stringify(
+    {
+      modelVisibleTools: toolCatalog.modelVisibleTools,
+      internalTools: toolCatalog.internalTools,
+    },
+    null,
+    2,
+  );
+
+const isToolHistoryEntry = (entry) =>
+  entry && typeof entry === 'object' && entry.type === 'tool_result';
+
+const hasHistoryToolName = (history, toolName) =>
+  history.some(
+    (entry) =>
+      isToolHistoryEntry(entry) &&
+      typeof entry.toolName === 'string' &&
+      entry.toolName === toolName,
+  );
+
+const hasHistoryToolNamePrefix = (history, prefix) =>
+  history.some(
+    (entry) =>
+      isToolHistoryEntry(entry) &&
+      typeof entry.toolName === 'string' &&
+      entry.toolName.startsWith(prefix),
+  );
+
+const collectHistoryResults = (history, toolName) =>
+  history
+    .filter(
+      (entry) =>
+        isToolHistoryEntry(entry) &&
+        typeof entry.toolName === 'string' &&
+        entry.toolName === toolName,
+    )
+    .map((entry) => entry.result);
+
+const hasSearchToolHistory = (history) =>
+  hasHistoryToolNamePrefix(history, 'search-');
+
+const hasCreateToolHistory = (history) =>
+  hasHistoryToolName(history, 'create-record');
+
+const buildExecutedToolResults = (history, toolName) =>
+  collectHistoryResults(history, toolName).map((result) => ({
+    toolName,
+    result,
+  }));
+
+const isToolsUnavailableMessage = (message) =>
+  /tool(?:s)?(?:\s+are|\s+is)?\s+(?:unavailable|not available|disconnected|missing|not connected)/i.test(
+    message,
+  ) || /cannot\s+(?:call|use)\s+.*tool/i.test(message);
+
+const shouldRejectFinalDecision = ({ decision, history }) => {
+  if (isToolsUnavailableMessage(decision.message)) {
+    return 'Never claim that tools are unavailable or cannot be called.';
+  }
+
+  if (hasCreateToolHistory(history) && decision.mode !== 'applied') {
+    return 'Immediate create mutations already ran, so the final mode must be applied.';
+  }
+
+  if (decision.mode === 'applied' && !hasCreateToolHistory(history)) {
+    return 'Applied final mode requires at least one create-record tool result.';
+  }
+
+  if (decision.mode === 'query' && !hasSearchToolHistory(history)) {
+    return 'Query final mode requires at least one search-* tool result. For broad list requests, call the relevant search-* tool with {"query": ""}.';
+  }
+
+  if (decision.mode === 'write_draft' && hasCreateToolHistory(history)) {
+    return 'write_draft final mode is only for approval-gated update/delete flows.';
+  }
+
+  return null;
+};
+
+const FALLBACK_TOOL_CATALOG = {
+  modelVisibleTools: [
+    {
+      name: 'search-companies',
+      description:
+        'Search companies by company name, segment, domain, status, or link.',
+      policy:
+        'Read-only company lookup. For broad list requests without filters, call with {"query": ""}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'search-people',
+      description:
+        'Search people by full name, email, company name, job title, role, or city.',
+      policy:
+        'Read-only person lookup. For broad list requests without filters, call with {"query": ""}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'search-opportunities',
+      description:
+        'Search opportunities by opportunity name, company, contact, stage, or close date.',
+      policy:
+        'Read-only opportunity lookup. For broad list requests without filters, call with {"query": ""}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'search-licenses',
+      description:
+        'Search licenses by customer, vendor, product, renewal risk, or expiry date.',
+      policy:
+        'Read-only license lookup. For broad list requests without filters, call with {"query": ""}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'search-activities',
+      description: 'Search notes and tasks by title or markdown body.',
+      policy:
+        'Read-only activity lookup. For broad list requests without filters, call with {"query": ""}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'create-record',
+      description: 'Create a CRM record immediately.',
+      policy: 'Immediate create mutation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+          },
+          data: {
+            type: 'object',
+          },
+        },
+        required: ['kind', 'data'],
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'update-record',
+      description: 'Update a CRM record.',
+      policy: 'Approval-gated update mutation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+          },
+          lookup: {
+            type: 'object',
+          },
+          data: {
+            type: 'object',
+          },
+        },
+        required: ['kind', 'lookup', 'data'],
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'delete-record',
+      description: 'Delete a CRM record.',
+      policy: 'Approval-gated delete mutation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+          },
+          lookup: {
+            type: 'object',
+          },
+        },
+        required: ['kind', 'lookup'],
+      },
+      visibility: 'model_visible',
+    },
+  ],
+  internalTools: [
+    {
+      name: 'load-slack-request',
+      description: 'Load the Slack request payload.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slackRequestId: {
+            type: 'string',
+          },
+        },
+        required: ['slackRequestId'],
+      },
+      visibility: 'internal',
+    },
+    {
+      name: TOOL_CATALOG_ENDPOINT,
+      description: 'Load the structured tool catalog.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+    {
+      name: 'save-query-answer',
+      description: 'Persist a query answer.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+    {
+      name: 'save-write-draft',
+      description: 'Persist a write draft.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+    {
+      name: SAVE_APPLIED_RESULT_ENDPOINT,
+      description: 'Persist an applied result.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+    {
+      name: 'mark-runner-error',
+      description: 'Persist runner errors.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+    {
+      name: 'post-slack-reply',
+      description: 'Post a Slack reply.',
+      policy: 'Runner-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      visibility: 'internal',
+    },
+  ],
+};
+
 const recordRunnerFailure = async ({
   slackRequestId,
   toolClient,
@@ -330,19 +798,54 @@ export const processSlackRequestWithCodex = async ({
       slackRequestId,
     },
   );
+  const slackRequest = unwrapSlackRequestRecord(requestRecord);
+  const shouldUseFallbackToolCatalog =
+    Boolean(effectiveToolClient?.callTool) &&
+    typeof effectiveToolClient.callTool === 'function' &&
+    Boolean(effectiveToolClient.callTool.mock);
+  let toolCatalog = FALLBACK_TOOL_CATALOG;
+
+  if (!shouldUseFallbackToolCatalog) {
+    try {
+      const toolCatalogRecord = await effectiveToolClient.callTool(
+        TOOL_CATALOG_ENDPOINT,
+        {},
+      );
+      const normalizedToolCatalog = normalizeToolCatalog(toolCatalogRecord);
+
+      if (
+        normalizedToolCatalog.modelVisibleTools.length > 0 ||
+        normalizedToolCatalog.internalTools.length > 0
+      ) {
+        toolCatalog = normalizedToolCatalog;
+      }
+    } catch {
+      // Older runner tests and degraded tool servers can still proceed with the fallback catalog.
+    }
+  }
+  const requestText = getRequestText(slackRequest);
+  const allowedModelToolNames = new Set(
+    toolCatalog.modelVisibleTools.map((descriptor) => descriptor.name),
+  );
 
   const history = [
     {
       type: 'tool_result',
-      endpoint: 'load-slack-request',
-      result: requestRecord,
+      toolName: 'load-slack-request',
+      result: slackRequest,
+    },
+    {
+      type: 'tool_result',
+      toolName: TOOL_CATALOG_ENDPOINT,
+      result: toolCatalog,
     },
   ];
 
   for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
     const prompt = buildCodexPrompt({
       slackRequestId,
-      slackRequest: requestRecord,
+      slackRequest,
+      toolCatalog,
       history,
     });
 
@@ -351,23 +854,23 @@ export const processSlackRequestWithCodex = async ({
         slackRequestId,
         prompt,
         history,
-        slackRequest: requestRecord,
+        slackRequest,
       }),
     );
 
     if (decision.kind === 'tool_call') {
-      if (!ALLOWED_TOOL_NAMES.has(decision.endpoint)) {
-        throw new Error(`Disallowed Codex tool call: ${decision.endpoint}`);
+      if (!allowedModelToolNames.has(decision.toolName)) {
+        throw new Error(`Disallowed Codex tool call: ${decision.toolName}`);
       }
 
       const result = await effectiveToolClient.callTool(
-        decision.endpoint,
+        decision.toolName,
         decision.payload,
       );
 
       history.push({
         type: 'tool_result',
-        endpoint: decision.endpoint,
+        toolName: decision.toolName,
         payload: decision.payload,
         result,
       });
@@ -397,13 +900,26 @@ export const processSlackRequestWithCodex = async ({
       };
     }
 
-    if (decision.mode === 'query') {
-      const answer = decision.message;
+    const finalDecisionRejection = shouldRejectFinalDecision({
+      decision,
+      history,
+    });
 
+    if (finalDecisionRejection) {
+      history.push({
+        type: 'runner_feedback',
+        message: finalDecisionRejection,
+        requestText,
+      });
+
+      continue;
+    }
+
+    if (decision.mode === 'query') {
       await effectiveToolClient.callTool('save-query-answer', {
         slackRequestId,
         reply: {
-          text: answer,
+          text: decision.message,
         },
         resultJson: {
           aiDiagnostics: {
@@ -417,13 +933,42 @@ export const processSlackRequestWithCodex = async ({
       });
       await effectiveToolClient.callTool('post-slack-reply', {
         slackRequestId,
-        text: answer,
+        text: decision.message,
       });
 
       return {
         kind: 'query',
         slackRequestId,
-        answer,
+        answer: decision.message,
+      };
+    }
+
+    if (decision.mode === 'applied') {
+      await effectiveToolClient.callTool(SAVE_APPLIED_RESULT_ENDPOINT, {
+        slackRequestId,
+        reply: {
+          text: decision.message,
+        },
+        resultJson: {
+          aiDiagnostics: {
+            provider: 'codex',
+            operation: 'applied',
+            attempted: true,
+            succeeded: true,
+            ...(decision.diagnostics ?? {}),
+          },
+          executedTools: buildExecutedToolResults(history, 'create-record'),
+        },
+      });
+      await effectiveToolClient.callTool('post-slack-reply', {
+        slackRequestId,
+        text: decision.message,
+      });
+
+      return {
+        kind: 'applied',
+        slackRequestId,
+        message: decision.message,
       };
     }
 
