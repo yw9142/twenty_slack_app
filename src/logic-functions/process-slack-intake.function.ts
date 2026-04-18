@@ -4,8 +4,9 @@ import type {
 } from 'twenty-sdk';
 
 import { PROCESS_INTAKE_FUNCTION_UNIVERSAL_IDENTIFIER } from 'src/constants/universal-identifiers';
+import { handoffSlackRequestToRunner } from 'src/utils/codex-runner';
 import { defineLogicFunction } from 'src/utils/define-logic-function';
-import { processSlackRequestById } from 'src/utils/slack-orchestrator';
+import { updateSlackRequest } from 'src/utils/slack-intake-service';
 
 const resolveSlackRequestId = (
   payload: {
@@ -33,11 +34,21 @@ const handler = async (
     | DatabaseEventPayload<ObjectRecordCreateEvent<Record<string, unknown>>>,
 ): Promise<Record<string, unknown>> => {
   const slackRequestId = resolveSlackRequestId(payload);
-  const slackRequest = await processSlackRequestById(slackRequestId);
+  await updateSlackRequest({
+    id: slackRequestId,
+    data: {
+      processingStatus: 'PROCESSING',
+      lastProcessedAt: new Date().toISOString(),
+    },
+  });
+
+  const processingStatus = await handoffSlackRequestToRunner({
+    slackRequestId,
+  });
 
   return {
-    slackRequestId: slackRequest.id,
-    processingStatus: slackRequest.processingStatus,
+    slackRequestId,
+    processingStatus,
   };
 };
 
@@ -45,7 +56,7 @@ export default defineLogicFunction({
   universalIdentifier: PROCESS_INTAKE_FUNCTION_UNIVERSAL_IDENTIFIER,
   name: 'process-slack-intake',
   description: 'Processes a stored Slack 요청 record by id',
-  timeoutSeconds: 60,
+  timeoutSeconds: 15,
   handler,
   databaseEventTriggerSettings: {
     eventName: 'slackRequest.created',

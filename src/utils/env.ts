@@ -34,6 +34,15 @@ export const getAdminSlackUserIds = (): string[] =>
 export const getManagementChannelId = (): string =>
   process.env.MANAGEMENT_CHANNEL_ID ?? DEFAULT_MANAGEMENT_CHANNEL_FALLBACK;
 
+export const getRunnerBaseUrl = (): string =>
+  getRequiredValue('RUNNER_BASE_URL');
+
+export const getRunnerSharedSecret = (): string =>
+  getRequiredValue('RUNNER_SHARED_SECRET');
+
+export const getToolSharedSecret = (): string =>
+  getRequiredValue('TOOL_SHARED_SECRET');
+
 export const getAnthropicModel = (): string =>
   process.env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 
@@ -41,4 +50,14 @@ export const getConfiguredStageValues = (key: string, fallback: string[]): strin
   const parsed = normalizeList(process.env[key]);
 
   return parsed.length > 0 ? parsed : fallback;
+};
+
+const getRequiredValue = (key: string): string => {
+  const value = process.env[key];
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+
+  return value;
 };

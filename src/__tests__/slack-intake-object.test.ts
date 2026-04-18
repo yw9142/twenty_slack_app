@@ -10,6 +10,7 @@ describe('slack intake object', () => {
   });
 
   it('stores processing timestamps as date-time fields', () => {
+    expect(getFieldType('processingStatus')).toBe('SELECT');
     expect(getFieldType('receivedAt')).toBe('DATE_TIME');
     expect(getFieldType('lastProcessedAt')).toBe('DATE_TIME');
   });

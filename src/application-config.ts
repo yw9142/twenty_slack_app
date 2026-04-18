@@ -46,7 +46,7 @@ export default defineApplication({
 
 - 승인 전에는 실제 CRM 데이터를 변경하지 않습니다.
 - Slack 요청 이력을 별도 객체로 남겨 감사와 운영 추적이 가능합니다.
-- 앱 구성 변수만으로 Slack/Anthropic 연동 설정을 관리합니다.
+- 앱 구성 변수만으로 Slack, runner, tool 연동 설정을 관리합니다.
 `,
   applicationVariables: {
     ALLOWED_CHANNEL_IDS: {
@@ -111,19 +111,23 @@ export default defineApplication({
       value: '',
       isSecret: true,
     },
-    ANTHROPIC_API_KEY: {
+    RUNNER_BASE_URL: {
       universalIdentifier: '73df722d-48c4-4a9c-a0e8-d02f7490ac7f',
-      description:
-        'Anthropic API key used for intent analysis and draft generation.',
+      description: 'Base URL for the internal Codex runner endpoint.',
+      value: '',
+      isSecret: false,
+    },
+    RUNNER_SHARED_SECRET: {
+      universalIdentifier: '30f63dbf-e0a0-4bb5-8782-9b87864c1479',
+      description: 'Shared secret used by the app to call the runner.',
       value: '',
       isSecret: true,
     },
-    ANTHROPIC_MODEL: {
-      universalIdentifier: '30f63dbf-e0a0-4bb5-8782-9b87864c1479',
-      description:
-        'Anthropic Claude model ID used for structured query and draft generation.',
-      value: 'claude-sonnet-4-6',
-      isSecret: false,
+    TOOL_SHARED_SECRET: {
+      universalIdentifier: '0dbe3bca-3a41-4c87-90be-ef3a7814cc63',
+      description: 'Shared secret used by the runner when calling /s/tools routes.',
+      value: '',
+      isSecret: true,
     },
     TWENTY_BASE_URL: {
       universalIdentifier: '296993ee-e53c-416e-a946-d76a4ae4ac6b',
