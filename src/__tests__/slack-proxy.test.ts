@@ -38,6 +38,32 @@ const toolCatalogResponse = {
         },
       },
       {
+        name: 'create-lead-package',
+        description: 'Build an approval-first lead registration package.',
+        policy: 'Use for 신규 리드 등록 requests and finish with write_draft.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            companyName: {
+              type: 'string',
+            },
+            contactName: {
+              type: 'string',
+            },
+            primaryEmail: {
+              type: 'string',
+            },
+            solutionName: {
+              type: 'string',
+            },
+            sourceText: {
+              type: 'string',
+            },
+          },
+          required: ['companyName', 'sourceText'],
+        },
+      },
+      {
         name: 'update-record',
         description: 'Update a CRM record.',
         policy: 'Use for approval-gated update flows.',
@@ -464,6 +490,7 @@ describe('slack proxy runner', () => {
     expect(firstCall.prompt).toContain('"modelVisibleTools"');
     expect(firstCall.prompt).toContain('search-opportunities');
     expect(firstCall.prompt).toContain('create-record');
+    expect(firstCall.prompt).toContain('create-lead-package');
     expect(firstCall.prompt).toContain('inputSchema');
     expect(firstCall.prompt).toContain('policy');
     expect(firstCall.prompt).toContain('load-slack-request');
@@ -699,6 +726,210 @@ describe('slack proxy runner', () => {
         ],
         warnings: [],
       },
+    });
+  });
+
+  it('uses create-lead-package for lead registration requests and persists an approval draft', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const runCodexDecision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'create-lead-package',
+        payload: {
+          companyName: '서광건설엔지니어링',
+          contactName: '박성훈',
+          primaryEmail: 'sh.park@seogwang-demo.co.kr',
+          solutionName: 'Autodesk AEC Collection',
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'write_draft',
+        message: '신규 리드 등록 승인 초안을 준비했습니다.',
+        draft: {
+          summary: '서광건설엔지니어링 신규 리드 등록 초안',
+          confidence: 0.93,
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+          actions: [],
+          warnings: [],
+        },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '신규 리드 등록 승인 초안을 준비했습니다.',
+            outcome: 'write_draft',
+          },
+          summary: '서광건설엔지니어링 리드 등록 승인을 기다린다.',
+          selectedEntities: {},
+          lastQuerySnapshot: null,
+          pendingApproval: {
+            sourceSlackRequestId: 'request-lead-package',
+            summary: '서광건설엔지니어링 신규 리드 등록 초안',
+            actions: [
+              {
+                kind: 'company',
+                operation: 'create',
+                data: {
+                  name: '서광건설엔지니어링',
+                },
+              },
+            ],
+            review: null,
+            status: 'AWAITING_CONFIRMATION',
+          },
+        },
+      });
+
+    const result = await processSlackRequestWithCodex({
+      slackRequestId: 'request-lead-package',
+      toolClient: {
+        callTool: async (
+          endpoint: string,
+          payload: Record<string, unknown> = {},
+        ) => {
+          toolCalls.push([endpoint, payload]);
+
+          if (endpoint === 'load-slack-request') {
+            return {
+              ok: true,
+              slackRequest: {
+                id: 'request-lead-package',
+                normalizedText: 'CRM에 신규 리드로 등록해줘',
+              },
+            };
+          }
+
+          if (endpoint === 'get-tool-catalog') {
+            return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-lead-package',
+                summaryJson: {
+                  text: '',
+                },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
+          }
+
+          if (endpoint === 'create-lead-package') {
+            return {
+              ok: true,
+              draft: {
+                summary: '서광건설엔지니어링 신규 리드 등록 초안',
+                confidence: 0.93,
+                sourceText: 'CRM에 신규 리드로 등록해줘',
+                actions: [
+                  {
+                    kind: 'company',
+                    operation: 'create',
+                    data: {
+                      name: '서광건설엔지니어링',
+                    },
+                  },
+                  {
+                    kind: 'person',
+                    operation: 'create',
+                    data: {
+                      name: '박성훈',
+                      companyName: '서광건설엔지니어링',
+                    },
+                  },
+                ],
+                warnings: [],
+                review: {
+                  overview: '리드 등록 패키지 초안',
+                  opinion: '회사와 담당자 중복 여부를 확인하세요.',
+                  items: [],
+                },
+              },
+              plannedRecords: {
+                company: {
+                  decision: 'CREATE',
+                  label: '서광건설엔지니어링',
+                },
+              },
+            };
+          }
+
+          if (endpoint === 'save-write-draft') {
+            return {
+              id: 'request-lead-package',
+              processingStatus: 'AWAITING_CONFIRMATION',
+            };
+          }
+
+          throw new Error(`Unexpected tool call: ${endpoint}`);
+        },
+      },
+      runCodexDecision,
+    });
+
+    expect(toolCalls).toEqual([
+      ['load-slack-request', { slackRequestId: 'request-lead-package' }],
+      ['get-tool-catalog', {}],
+      ['load-thread-context', { slackRequestId: 'request-lead-package' }],
+      [
+        'create-lead-package',
+        {
+          companyName: '서광건설엔지니어링',
+          contactName: '박성훈',
+          primaryEmail: 'sh.park@seogwang-demo.co.kr',
+          solutionName: 'Autodesk AEC Collection',
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+        },
+      ],
+      [
+        'save-write-draft',
+        {
+          slackRequestId: 'request-lead-package',
+          draft: expect.objectContaining({
+            summary: '서광건설엔지니어링 신규 리드 등록 초안',
+            actions: expect.arrayContaining([
+              expect.objectContaining({ kind: 'company', operation: 'create' }),
+              expect.objectContaining({ kind: 'person', operation: 'create' }),
+            ]),
+          }),
+          resultJson: {
+            aiDiagnostics: {
+              attempted: true,
+              operation: 'write_draft',
+              provider: 'codex',
+              succeeded: true,
+            },
+          },
+          threadContextPatch: expect.objectContaining({
+            summary: '서광건설엔지니어링 리드 등록 승인을 기다린다.',
+          }),
+        },
+      ],
+    ]);
+
+    expect(result).toEqual({
+      kind: 'write_draft',
+      slackRequestId: 'request-lead-package',
+      draft: expect.objectContaining({
+        summary: '서광건설엔지니어링 신규 리드 등록 초안',
+        actions: expect.arrayContaining([
+          expect.objectContaining({ kind: 'company', operation: 'create' }),
+          expect.objectContaining({ kind: 'person', operation: 'create' }),
+        ]),
+      }),
     });
   });
 

@@ -27,13 +27,16 @@ const nowIso = (): string => new Date().toISOString();
 
 const formatDecision = (
   decision: 'CREATE' | 'UPDATE' | 'DELETE' | 'SKIP',
+  reason?: string | null,
 ): string =>
   decision === 'UPDATE'
     ? '기존 레코드 업데이트'
     : decision === 'DELETE'
       ? '기존 레코드 삭제'
       : decision === 'SKIP'
-        ? '반영 보류'
+        ? reason?.includes('재사용')
+          ? '기존 레코드 재사용'
+          : '반영 보류'
         : '신규 생성';
 
 const buildFallbackReview = (draft: CrmWriteDraft) => ({
@@ -86,7 +89,7 @@ const buildReviewText = (draft: CrmWriteDraft): string[] => {
 
     return [
       `*${index + 1}. ${item.kind}*`,
-      `• 결정: ${formatDecision(item.decision)}`,
+      `• 결정: ${formatDecision(item.decision, item.reason)}`,
       `• 반영 대상: ${item.target}`,
       matchedRecord,
       `• 반영 필드:\n${fields}`,

@@ -92,6 +92,164 @@ describe('crm write helpers', () => {
     );
   });
 
+  it('builds a lead package draft with company/person reuse and deterministic create actions', async () => {
+    const { buildLeadPackageDraft } = await import('src/utils/crm-write');
+
+    query
+      .mockResolvedValueOnce({
+        companies: {
+          edges: [
+            {
+              node: {
+                id: 'company-1',
+                name: '서광건설엔지니어링',
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        people: {
+          edges: [
+            {
+              node: {
+                id: 'person-1',
+                name: {
+                  firstName: '박성훈',
+                  lastName: '',
+                },
+                emails: {
+                  primaryEmail: 'sh.park@seogwang-demo.co.kr',
+                },
+                company: {
+                  name: '서광건설엔지니어링',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+    const result = await buildLeadPackageDraft({
+      companyName: '서광건설엔지니어링',
+      contactName: '박성훈',
+      jobTitle: 'BIM혁신팀 수석',
+      primaryEmail: 'sh.park@seogwang-demo.co.kr',
+      phone: '010-7714-2203',
+      vendorName: 'Autodesk',
+      solutionName: 'Autodesk AEC Collection',
+      currentSituation:
+        '건축과 설비 프로젝트를 Revit 중심으로 표준화하려고 하고, 본사 40명 + 협력사 20명까지 포함한 BIM 운영 체계를 검토 중.',
+      expectedScale: 'AEC Collection 60석, 교육 및 초기 컨설팅 포함 요청',
+      budgetText: '1차 연 1.2억원 내외',
+      budgetAmount: 120000000,
+      targetQuarterOrDate: '2026년 3분기',
+      sourceChannel: '다우데이타 BIM 컨설팅 사례 보고 문의',
+      nextAction: '라이선스 견적 초안과 BIM 컨설팅 범위안 같이 제안해줘',
+      sourceText: 'CRM에 신규 리드로 등록해줘',
+    });
+
+    expect(result.plannedRecords).toEqual({
+      company: {
+        decision: 'REUSE',
+        label: '서광건설엔지니어링',
+        matchedRecord: {
+          id: 'company-1',
+          label: '서광건설엔지니어링',
+        },
+      },
+      person: {
+        decision: 'REUSE',
+        label: '박성훈',
+        matchedRecord: {
+          id: 'person-1',
+          label: '박성훈',
+        },
+      },
+      opportunity: {
+        decision: 'CREATE',
+        label: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+        matchedRecord: null,
+      },
+      note: {
+        decision: 'CREATE',
+        label: '서광건설엔지니어링 신규 리드 메모',
+        matchedRecord: null,
+      },
+      task: {
+        decision: 'CREATE',
+        label: '서광건설엔지니어링 후속 제안 준비',
+        matchedRecord: null,
+      },
+    });
+    expect(result.draft.actions).toEqual([
+      {
+        kind: 'opportunity',
+        operation: 'create',
+        data: {
+          name: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+          companyName: '서광건설엔지니어링',
+          pointOfContactName: '박성훈',
+          stage: 'IDENTIFIED',
+          amount: 120000000,
+          closeDate: '2026-09-30',
+        },
+      },
+      {
+        kind: 'note',
+        operation: 'create',
+        data: {
+          title: '서광건설엔지니어링 신규 리드 메모',
+          body: expect.stringContaining(
+            '관심 솔루션/벤더: Autodesk AEC Collection / Autodesk',
+          ),
+          companyName: '서광건설엔지니어링',
+          pointOfContactName: '박성훈',
+          opportunityName: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+        },
+      },
+      {
+        kind: 'task',
+        operation: 'create',
+        data: {
+          title: '서광건설엔지니어링 후속 제안 준비',
+          body: expect.stringContaining(
+            '라이선스 견적 초안과 BIM 컨설팅 범위안 같이 제안해줘',
+          ),
+          companyName: '서광건설엔지니어링',
+          pointOfContactName: '박성훈',
+          opportunityName: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+        },
+      },
+    ]);
+    expect(result.draft.review?.items).toEqual([
+      expect.objectContaining({
+        kind: 'company',
+        decision: 'SKIP',
+        target: '서광건설엔지니어링',
+        matchedRecord: '서광건설엔지니어링',
+      }),
+      expect.objectContaining({
+        kind: 'person',
+        decision: 'SKIP',
+        target: '박성훈',
+        matchedRecord: '박성훈',
+      }),
+      expect.objectContaining({
+        kind: 'opportunity',
+        decision: 'CREATE',
+      }),
+      expect.objectContaining({
+        kind: 'note',
+        decision: 'CREATE',
+      }),
+      expect.objectContaining({
+        kind: 'task',
+        decision: 'CREATE',
+      }),
+    ]);
+  });
+
   it('removes helper lookup fields before opportunity mutations', async () => {
     const { applyApprovedDraft } = await import('src/utils/crm-write');
 
@@ -545,6 +703,203 @@ describe('crm write helpers', () => {
     expect(notePayload).not.toHaveProperty('pointOfContactId');
     expect(taskPayload).not.toHaveProperty('companyId');
     expect(taskPayload).not.toHaveProperty('pointOfContactId');
+  });
+
+  it('reuses existing company and person records when applying a lead package draft', async () => {
+    const { applyApprovedDraft } = await import('src/utils/crm-write');
+
+    query.mockImplementation(async (request: Record<string, unknown>) => {
+      if ('companies' in request) {
+        return {
+          companies: {
+            edges: [
+              {
+                node: {
+                  id: 'company-1',
+                  name: '서광건설엔지니어링',
+                },
+              },
+            ],
+          },
+        };
+      }
+
+      if ('people' in request) {
+        return {
+          people: {
+            edges: [
+              {
+                node: {
+                  id: 'person-1',
+                  name: {
+                    firstName: '박성훈',
+                    lastName: '',
+                  },
+                  emails: {
+                    primaryEmail: 'sh.park@seogwang-demo.co.kr',
+                  },
+                  company: {
+                    name: '서광건설엔지니어링',
+                  },
+                },
+              },
+            ],
+          },
+        };
+      }
+
+      return {};
+    });
+
+    mutation
+      .mockResolvedValueOnce({
+        createOpportunity: {
+          id: 'opp-1',
+        },
+      })
+      .mockResolvedValueOnce({
+        createNote: {
+          id: 'note-1',
+        },
+      })
+      .mockResolvedValueOnce({
+        createNoteTarget: {
+          id: 'note-target-company',
+        },
+      })
+      .mockResolvedValueOnce({
+        createNoteTarget: {
+          id: 'note-target-person',
+        },
+      })
+      .mockResolvedValueOnce({
+        createNoteTarget: {
+          id: 'note-target-opportunity',
+        },
+      })
+      .mockResolvedValueOnce({
+        createTask: {
+          id: 'task-1',
+        },
+      })
+      .mockResolvedValueOnce({
+        createTaskTarget: {
+          id: 'task-target-company',
+        },
+      })
+      .mockResolvedValueOnce({
+        createTaskTarget: {
+          id: 'task-target-person',
+        },
+      })
+      .mockResolvedValueOnce({
+        createTaskTarget: {
+          id: 'task-target-opportunity',
+        },
+      });
+
+    const result = await applyApprovedDraft({
+      summary: '서광건설엔지니어링 신규 리드 등록 초안',
+      confidence: 0.93,
+      sourceText: 'CRM에 신규 리드로 등록해줘',
+      warnings: [],
+      actions: [
+        {
+          kind: 'opportunity',
+          operation: 'create',
+          data: {
+            name: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+            companyName: '서광건설엔지니어링',
+            pointOfContactName: '박성훈',
+            stage: 'IDENTIFIED',
+          },
+        },
+        {
+          kind: 'note',
+          operation: 'create',
+          data: {
+            title: '서광건설엔지니어링 신규 리드 메모',
+            body: '현재 상황',
+            companyName: '서광건설엔지니어링',
+            pointOfContactName: '박성훈',
+            opportunityName: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+          },
+        },
+        {
+          kind: 'task',
+          operation: 'create',
+          data: {
+            title: '서광건설엔지니어링 후속 제안 준비',
+            body: '라이선스 견적 초안과 BIM 컨설팅 범위안 같이 제안',
+            companyName: '서광건설엔지니어링',
+            pointOfContactName: '박성훈',
+            opportunityName: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+          },
+        },
+      ],
+    });
+
+    expect(mutation).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        createCompany: expect.anything(),
+      }),
+    );
+    expect(mutation).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        createPerson: expect.anything(),
+      }),
+    );
+    expect(mutation).toHaveBeenCalledWith({
+      createOpportunity: {
+        __args: {
+          data: expect.objectContaining({
+            name: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+            companyId: 'company-1',
+            pointOfContactId: 'person-1',
+            stage: 'IDENTIFIED',
+          }),
+        },
+        id: true,
+      },
+    });
+    expect(mutation).toHaveBeenCalledWith({
+      createNoteTarget: {
+        __args: {
+          data: {
+            noteId: 'note-1',
+            targetCompanyId: 'company-1',
+          },
+        },
+        id: true,
+      },
+    });
+    expect(mutation).toHaveBeenCalledWith({
+      createNoteTarget: {
+        __args: {
+          data: {
+            noteId: 'note-1',
+            targetPersonId: 'person-1',
+          },
+        },
+        id: true,
+      },
+    });
+    expect(mutation).toHaveBeenCalledWith({
+      createTaskTarget: {
+        __args: {
+          data: {
+            taskId: 'task-1',
+            targetOpportunityId: 'opp-1',
+          },
+        },
+        id: true,
+      },
+    });
+    expect(result.created).toEqual([
+      { kind: 'opportunity', id: 'opp-1' },
+      { kind: 'note', id: 'note-1' },
+      { kind: 'task', id: 'task-1' },
+    ]);
   });
 
   it('builds approval previews for delete actions from resolved records', async () => {

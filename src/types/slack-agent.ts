@@ -94,6 +94,44 @@ export type CrmWriteDraft = {
   review?: CrmWriteReview;
 };
 
+export type LeadPackagePayload = {
+  companyName: string;
+  contactName?: string;
+  jobTitle?: string;
+  primaryEmail?: string;
+  phone?: string;
+  vendorName?: string;
+  solutionName?: string;
+  currentSituation?: string;
+  expectedScale?: string;
+  budgetText?: string;
+  budgetAmount?: number;
+  targetQuarterOrDate?: string;
+  sourceChannel?: string;
+  nextAction?: string;
+  sourceText: string;
+};
+
+export type LeadPackagePlannedRecord = {
+  decision: 'CREATE' | 'REUSE';
+  label: string;
+  matchedRecord: {
+    id: string;
+    label: string | null;
+  } | null;
+};
+
+export type LeadPackageDraftResult = {
+  draft: CrmWriteDraft;
+  plannedRecords: {
+    company: LeadPackagePlannedRecord;
+    person?: LeadPackagePlannedRecord;
+    opportunity: LeadPackagePlannedRecord;
+    note: LeadPackagePlannedRecord;
+    task?: LeadPackagePlannedRecord;
+  };
+};
+
 export type SlackBlock = Record<string, unknown>;
 
 export type SlackReply = {
