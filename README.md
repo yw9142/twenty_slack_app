@@ -1,323 +1,348 @@
 # 다우 Slack Agent
 
-`다우 Slack Agent`는 Slack에서 올라오는 한국어 영업 대화를 읽고, Twenty CRM 데이터를 조회하거나 CRM 반영 초안을 만든 뒤 Slack 승인 후 실제 반영까지 이어주는 Twenty 앱입니다.
-이 저장소는 Twenty 코어를 수정하는 포크가 아니라, 독립적으로 빌드해서 tarball로 배포하는 앱 패키지입니다.
+`다우 Slack Agent`는 Slack 대화를 Twenty CRM 작업으로 연결하는 Twenty 앱 패키지입니다. Slack ingress와 승인/감사 로그는 Twenty 앱이 담당하고, CRM 조회/초안 판단은 `slack-proxy` 안의 Codex runner가 수행합니다.
 
-공식 Twenty 앱 문서:
-- [Getting Started](https://docs.twenty.com/developers/extend/apps/getting-started)
-- [Publishing](https://docs.twenty.com/developers/extend/apps/publishing)
+이 저장소는 Twenty 코어 포크가 아닙니다. Twenty 앱 tarball과 별도 `slack-proxy` 컨테이너를 함께 배포해서 운영합니다.
 
-## 1. 이 앱이 하는 일
+참고 문서:
+- [Twenty Apps - Building](https://docs.twenty.com/developers/extend/apps/building)
+- [Twenty Apps - Publishing](https://docs.twenty.com/developers/extend/apps/publishing)
 
-이 앱은 Slack과 Twenty 사이에 다음 역할을 맡습니다.
-
-- Slack `@멘션`, `/crm` 슬래시 커맨드, 승인 버튼 인터랙션을 수신합니다.
-- 사용자의 한국어 메시지를 `조회`, `쓰기 초안`, `승인 액션`으로 분류합니다.
-- 조회 요청이면 Twenty CRM 데이터를 검색해 한국어 답변을 생성합니다.
-- 입력 요청이면 회사, 담당자, 영업기회, 솔루션, 노트, 작업 등에 대한 CRM 반영 초안을 생성합니다.
-- 초안은 바로 반영하지 않고 Slack 승인 카드를 보낸 뒤, 사용자가 승인하면 실제 CRM에 반영합니다.
-- 모든 요청과 결과를 `Slack 요청` 객체에 저장해 운영 이력과 오류를 추적합니다.
-- 영업기회 점검, 단계 점검, 주간 브리핑, 월간 업셀 추천 같은 운영 자동화를 실행합니다.
-
-## 2. 전체 동작 흐름
+## 현재 구조
 
 ```mermaid
 sequenceDiagram
-    participant U as Slack 사용자
-    participant S as Slack
-    participant A as 다우 Slack Agent
-    participant T as Twenty CRM
+    participant U as "Slack 사용자"
+    participant S as "Slack"
+    participant P as "slack-proxy"
+    participant A as "Twenty App"
+    participant C as "Codex runner"
+    participant T as "Twenty CRM"
 
-    U->>S: @봇 멘션 또는 /crm 명령
-    S->>A: Events API / Slash Command 요청
-    A->>T: Slack 요청 객체 생성
-    A-->>S: 3초 내 접수 응답
-    T->>A: slackRequest.created 트리거
-    A->>A: 의도 분류 / 초안 생성 / 조회 처리
-    alt 조회 요청
-        A->>T: CRM 데이터 조회
-        A-->>S: 한국어 답변 전송
-    else 쓰기 초안 요청
-        A-->>S: 승인 카드 전송
-        U->>S: 반영 / 취소
-        S->>A: Interactivity 요청
-        A->>T: CONFIRMED 상태 반영
-        T->>A: slackRequest.updated 트리거
-        A->>T: 실제 CRM create/update
-        A-->>S: 반영 결과 전송
+    U->>S: "@봇 멘션 또는 /crm"
+    S->>P: "/slack/events, /slack/commands, /slack/interactivity"
+    P->>A: "/s/slack/* 로 프록시"
+    A->>T: "SlackRequest 생성"
+    A-->>S: "빠른 접수 응답"
+    A->>P: "POST /internal/slack-requests/process"
+    P->>C: "Codex CLI loop 실행"
+    C->>A: "/s/tools/* 호출"
+    A->>T: "CRM 조회 또는 초안 저장"
+    alt 조회
+        A-->>S: "Slack thread 답변"
+    else 승인 필요한 쓰기
+        A-->>S: "승인 카드"
+        U->>S: "반영 또는 취소"
+        S->>P: "/slack/interactivity"
+        P->>A: "/s/slack/interactivity"
+        A->>T: "승인 후 apply-approved-draft 실행"
     end
 ```
 
-핵심 원칙은 두 가지입니다.
+핵심 원칙:
+- Slack App 설정은 `/slack/*` 공개 경로만 바라봅니다.
+- Twenty 앱의 `/s/slack/*`와 `/s/tools/*`는 직접 외부에 노출하지 않습니다.
+- `process-slack-intake`는 AI 추론을 하지 않고 runner handoff만 수행합니다.
+- Codex는 CRM을 직접 쓰지 않습니다. runner tool route를 통해 조회/초안 생성만 하며, 승인 후 실제 write는 `apply-approved-draft`가 수행합니다.
+- Codex 인증은 ChatGPT 구독 로그인 기반 Codex CLI 캐시를 사용합니다. OpenAI API key 기반 호출은 현재 범위가 아닙니다.
 
-- Slack 진입점에서는 무거운 처리를 하지 않고 `Slack 요청` 객체만 만든 뒤 빠르게 응답합니다.
-- CRM 쓰기 작업은 반드시 Slack 승인 이후에만 실행합니다.
+## 주요 기능
 
-## 3. Twenty 안에 설치되는 리소스
+### CRM 조회
 
-### 3.1 객체
+예시:
+- `@Daou-CRM-slack 미래금융 영업기회 보여줘`
+- `/crm 최근 3개월간 실적 저조한 파트너사 분석해줘`
+- `/crm Adobe 갱신 리스크 있는 라이선스 정리해줘`
 
-이 앱은 `Slack 요청`이라는 운영 객체를 생성합니다.
+동작:
+1. Slack 요청을 `SlackRequest`로 저장합니다.
+2. runner가 `search-*` tool을 호출해 CRM 데이터를 수집합니다.
+3. Codex가 한국어 답변을 만듭니다.
+4. `save-query-answer`가 `ANSWERED` 상태와 thread memory를 저장합니다.
+5. `post-slack-reply`가 Slack thread에 답변합니다.
 
-주요 필드:
-- `요청명`
-- `입력 경로`
-- `의도`
-- `처리 상태`
-- `원문`
-- `정규화 텍스트`
-- `초안 JSON`
-- `결과 JSON`
-- `오류 메시지`
-- `중복 방지 키`
-- `승인자 Slack User ID`
-- `수신 시각`
-- `마지막 처리 시각`
+### 일반 CRM 생성
 
-처리 상태 정의:
-- `RECEIVED`: Slack에서 요청을 접수한 상태
-- `CLASSIFIED`: AI 분류가 끝난 상태
-- `AWAITING_CONFIRMATION`: 승인 대기 상태
-- `CONFIRMED`: Slack에서 승인 버튼을 누른 상태
-- `APPLIED`: CRM 반영 완료 상태
-- `ANSWERED`: 조회 응답 완료 상태
-- `REJECTED`: 사용자가 취소한 상태
-- `ERROR`: 처리 중 오류가 발생한 상태
+단순 생성 요청은 `create-record` tool을 사용할 수 있습니다. 생성이 즉시 실행되면 final mode는 `applied`여야 하며, 실행 결과가 `save-applied-result`로 저장됩니다.
+
+예시:
+- `/crm 미래금융 회사 생성해줘`
+- `/crm A은행 담당자 김민수 추가해줘`
+
+### 수정/삭제 승인 플로우
+
+수정과 삭제는 항상 승인 대상입니다.
+
+동작:
+1. Codex가 `update-record` 또는 `delete-record`를 호출합니다.
+2. tool route는 실제 mutation을 실행하지 않고 대상/변경사항 review metadata를 반환합니다.
+3. runner가 `write_draft`로 종료합니다.
+4. `save-write-draft`가 `AWAITING_CONFIRMATION` 상태와 Slack 승인 카드를 저장합니다.
+5. 사용자가 승인하면 `apply-approved-draft`가 실제 update/delete를 실행합니다.
+
+### 신규 리드 패키지
+
+`신규 리드 등록`, `잠재고객 등록`, `CRM에 등록` 계열 요청은 generic `create-record`가 아니라 `create-lead-package`를 우선 사용합니다.
+
+예시:
+
+```text
+@Daou-CRM-slack CRM에 신규 리드로 등록해줘.
+고객사: 서광건설엔지니어링
+담당자: 박성훈
+직책: BIM혁신팀 수석
+이메일: sh.park@seogwang-demo.co.kr
+관심 솔루션/벤더: Autodesk AEC Collection / Autodesk
+예상 규모: AEC Collection 60석, 교육 및 초기 컨설팅 포함 요청
+예산: 1차 연 1.2억원 내외
+도입 희망 시점: 2026년 3분기
+다음 액션: 라이선스 견적 초안과 BIM 컨설팅 범위안 같이 제안해줘
+```
+
+`create-lead-package` 결과:
+- 회사는 이름 기준으로 재사용하거나 생성 예정으로 둡니다.
+- 담당자는 이메일 우선, 없으면 이름+회사 기준으로 재사용하거나 생성 예정으로 둡니다.
+- 영업기회는 항상 신규 생성 예정입니다.
+- 메모는 항상 생성 예정이며, 구조화 필드에 못 넣는 리드 맥락을 보존합니다.
+- 다음 액션이 있으면 task 생성 예정으로 둡니다.
+- 승인 전에는 어떤 CRM create mutation도 실행하지 않습니다.
+
+승인 후 실행 순서:
+
+```text
+company -> person -> opportunity -> note -> task
+```
+
+보호 장치:
+- `create-lead-package` 호출 후 `create-record` 호출은 runner가 차단합니다.
+- 리드 패키지 draft는 model final JSON이 아니라 tool preview 결과를 source of truth로 저장합니다.
+- 모델이 draft actions를 덮어써도 저장 시 반영되지 않습니다.
+
+## Same-Thread Memory
+
+같은 Slack thread 안에서는 대화 맥락을 이어갑니다.
+
+메모리 키:
+
+```text
+slackTeamId + slackChannelId + slackThreadTs
+```
+
+저장 객체:
+- `SlackRequest`: 요청 단위 audit log
+- `slackThreadContext`: 같은 thread의 conversational state
+
+`slackThreadContext`가 보관하는 정보:
+- 최근 6턴 대화
+- 압축 summary
+- 선택된 company/person/opportunity/license ids
+- 최근 조회 결과 축약본
+- thread당 하나의 active pending approval
+
+다른 Slack thread, 다른 채널, 다른 사용자의 thread와 memory는 공유하지 않습니다.
+
+## Twenty 앱 리소스
+
+### 객체
+
+설치 시 생성되는 주요 객체:
+- `Slack 요청` (`slackRequest`)
+- `Slack 스레드 컨텍스트` (`slackThreadContext`)
+
+`Slack 요청` 주요 상태:
+- `RECEIVED`: Slack ingress에서 저장됨
+- `PROCESSING`: runner handoff 시작
+- `CLASSIFIED`: 이전 호환 상태
+- `AWAITING_CONFIRMATION`: 승인 대기
+- `CONFIRMED`: Slack에서 승인됨
+- `APPLIED`: 실제 CRM 반영 완료
+- `ANSWERED`: 조회 응답 완료
+- `REJECTED`: 사용자가 취소
+- `ERROR`: 처리 실패
 
 주의:
-- 현재 `approvedByWorkspaceMemberId` 필드에는 실제 Twenty workspace member id가 아니라 Slack user id가 저장됩니다.
+- `approvedByWorkspaceMemberId`에는 현재 Twenty member id가 아니라 Slack user id가 저장됩니다.
 
-### 3.2 뷰와 내비게이션
+### 공개 Slack routes
 
-설치 후 아래 운영 뷰가 생성됩니다.
-
-- `전체 Slack 요청`
-- `승인 대기`
-- `오류`
-- `질의 이력`
-- `쓰기 초안 이력`
-
-좌측 사이드바에는 `Slack 요청` 메뉴가 추가됩니다.
-
-### 3.3 HTTP 엔드포인트
-
-이 앱은 아래 세 개의 공개 HTTP route를 제공합니다.
-
+Twenty 앱 내부 route:
 - `POST /s/slack/events`
 - `POST /s/slack/commands`
 - `POST /s/slack/interactivity`
 
-각 엔드포인트는 Slack 서명을 검증하고, 허용 채널 검사 후 `Slack 요청` 객체를 생성하거나 승인/거절 액션을 처리합니다.
+운영에서는 Slack이 이 경로를 직접 호출하지 않고, `slack-proxy`의 `/slack/*` 경로를 호출합니다.
 
-### 3.4 로직 함수와 자동화
+### Runner tool routes
 
-핵심 로직 함수:
+모든 `/s/tools/*` route는 `x-tool-shared-secret`으로 보호됩니다.
 
-- `slack-events-route`
-- `slack-commands-route`
-- `slack-interactivity-route`
-- `process-slack-intake`
-- `apply-approved-draft`
-- `post-slack-message`
-- `notify-admin`
+Bootstrap/internal:
+- `POST /s/tools/load-slack-request`
+- `POST /s/tools/load-thread-context`
+- `POST /s/tools/get-tool-catalog`
 
-운영 자동화:
+Read tools:
+- `POST /s/tools/search-companies`
+- `POST /s/tools/search-people`
+- `POST /s/tools/search-opportunities`
+- `POST /s/tools/search-licenses`
+- `POST /s/tools/search-activities`
 
-- `process-slack-intake`
-  `slackRequest.created` 발생 시 의도 분류, 조회 응답, 초안 생성 처리
-- `apply-approved-draft`
-  `slackRequest.updated` 이후 `processingStatus = CONFIRMED`일 때 실제 CRM 반영
-- `daily-opportunity-health`
-  매일 실행되는 영업기회 건강도 점검
-- `opportunity-stage-automation`
-  영업기회 단계 변경 시 누락 정보 점검
-- `note-structuring`
-  `note.created` 시 후속 작업 후보 생성
-- `weekly-briefing`
-  매주 월요일 브리핑 생성
-- `monthly-upsell`
-  매월 업셀 후보 요약 생성
+Write/preview tools:
+- `POST /s/tools/create-record`
+- `POST /s/tools/create-lead-package`
+- `POST /s/tools/update-record`
+- `POST /s/tools/delete-record`
 
-현재 cron 설정값:
-- `daily-opportunity-health`: `0 0 * * *`
-- `weekly-briefing`: `0 0 * * 1`
-- `monthly-upsell`: `0 0 1 * *`
+Persistence/Slack tools:
+- `POST /s/tools/save-query-answer`
+- `POST /s/tools/save-applied-result`
+- `POST /s/tools/save-write-draft`
+- `POST /s/tools/mark-runner-error`
+- `POST /s/tools/post-slack-reply`
 
-주의:
-- cron 해석 기준 시각은 Twenty 서버 운영 환경에 따라 달라질 수 있습니다. 운영 서버의 timezone 정책을 확인해야 합니다.
+Codex에게 직접 노출되는 tool은 tool catalog의 `modelVisibleTools`뿐입니다. 저장/응답/오류 처리 tool은 runner control flow 전용입니다.
 
-## 4. 주요 기능
+## Tool 정책
 
-### 4.1 Slack에서 CRM 조회
+Model-visible tools:
+- `search-companies`
+- `search-people`
+- `search-opportunities`
+- `search-licenses`
+- `search-activities`
+- `create-record`
+- `create-lead-package`
+- `update-record`
+- `delete-record`
 
-예시:
+정책:
+- 조회/분석/보고 요청은 최소 하나 이상의 `search-*` tool 호출 후 답변합니다.
+- 넓은 조회는 `{"query": ""}`로 검색할 수 있습니다.
+- 신규 리드 등록은 `create-lead-package`를 사용하고 반드시 `write_draft`로 종료합니다.
+- 단순 create는 `create-record` 후 `applied`로 종료할 수 있습니다.
+- update/delete는 `write_draft`로 종료하고 Slack 승인을 기다립니다.
+- 모든 성공 final은 `threadContextPatch`를 포함해야 합니다.
 
-- `@agent 이번달 신규 영업기회 알려줘`
-- `/crm 미래금융 기회 상태 보여줘`
-- `/crm 리스크 딜 알려줘`
+## Slack 설정
 
-동작:
+Slack App 설정 URL:
+- Events API Request URL: `https://<your-domain>/slack/events`
+- Slash Command `/crm` Request URL: `https://<your-domain>/slack/commands`
+- Interactivity Request URL: `https://<your-domain>/slack/interactivity`
 
-1. 메시지를 `QUERY`로 분류합니다.
-2. Twenty CRM 데이터를 조회합니다.
-3. 한국어 요약 답변을 Slack 스레드에 보냅니다.
-4. 결과 요약은 `Slack 요청.resultJson`에 남깁니다.
-
-### 4.2 Slack에서 CRM 반영 초안 생성
-
-예시:
-
-- `/crm 미래금융이 Citrix VDI 검토 중이고 에이맥스 공동영업 예정`
-- `@agent 오늘 미팅 내용 CRM에 반영해줘`
-
-동작:
-
-1. 메시지를 `WRITE_DRAFT`로 분류합니다.
-2. AI가 CRM 반영 초안을 만듭니다.
-3. Slack 승인 카드가 올라갑니다.
-4. 사용자가 `반영`을 누르면 실제 CRM create/update가 실행됩니다.
-5. 사용자가 `취소`를 누르면 `REJECTED` 상태로 종료됩니다.
-
-### 4.3 운영 자동화
-
-현재 포함된 자동화는 아래와 같습니다.
-
-- 영업기회 건강도 점검
-  벤더, 파트너, 솔루션 누락과 장기 미갱신 영업기회를 점검합니다.
-- 단계 변경 점검
-  특정 단계에서 필요한 보완 작업을 생성합니다.
-- 노트 구조화
-  노트 본문에서 액션 아이템 후보를 뽑아 작업으로 만듭니다.
-- 주간 브리핑
-  영업기회 수, 정체 딜, 오픈 작업 수를 요약해 관리 채널에 보냅니다.
-- 월간 업셀 추천
-  수주 이력이 있지만 현재 열린 기회가 없는 회사를 후보로 추립니다.
-
-## 5. Slack에서 사용하는 방법
-
-### 5.1 사용자 사용법
-
-사용자는 아래 세 가지 방식으로 앱을 사용할 수 있습니다.
-
-1. 채널에서 앱을 멘션합니다.
-   예: `@다우 Slack Agent 이번달 신규 기회 알려줘`
-2. `/crm` 슬래시 커맨드를 사용합니다.
-   예: `/crm 미래금융 딜 상태 알려줘`
-3. 앱이 만든 승인 카드에서 `반영` 또는 `취소` 버튼을 누릅니다.
-
-### 5.2 권장 사용 패턴
-
-- 조회 요청은 질문형 문장으로 보냅니다.
-- 입력 요청은 회사명, 담당자, 기회명, 솔루션, 메모 내용을 가능한 한 구체적으로 씁니다.
-- 정보가 불완전하면 앱은 note/task 위주 초안을 만들 수 있습니다.
-- 실제 데이터 변경은 승인 이후에만 일어납니다.
-
-## 6. Slack App 설정
-
-Slack 쪽에서는 아래 URL을 각각 등록해야 합니다.
-
-- Events API Request URL
-  `https://<your-twenty-domain>/slack/events`
-- Slash Command `/crm` Request URL
-  `https://<your-twenty-domain>/slack/commands`
-- Interactivity Request URL
-  `https://<your-twenty-domain>/slack/interactivity`
-
-권장 Bot Token Scope:
-
+필수 Bot Token Scope:
 - `app_mentions:read`
 - `chat:write`
 - `commands`
 
-상황에 따라 추가로 검토할 수 있는 Scope:
-
+필요 시 추가:
 - `chat:write.public`
-  봇이 아직 참여하지 않은 공개 채널에도 운영 브리핑을 보내야 할 때
 
-주의:
-- 현재 구현은 이메일 기반 사용자 권한 매핑을 실제로 사용하지 않으므로 `users:read.email`은 필수 범위가 아닙니다.
-- Events API에서는 `app_mention` 이벤트를 구독해야 합니다.
-- self-hosted Twenty를 production으로 올리면 route trigger POST 응답이 `201`로 내려갈 수 있습니다. Slack은 `200 OK`를 요구하므로, 아래 `Slack Proxy`를 함께 두는 구성이 안전합니다.
+Events API 구독:
+- `app_mention`
 
-## 7. 배포 방식
+Slack URL에 `/s/slack/*`를 등록하지 않습니다. `/s/*`는 Twenty 내부 route이고, 운영 ingress는 `slack-proxy`가 담당합니다.
 
-이 앱은 Twenty 코어를 다시 빌드하지 않고, tarball을 Twenty 서버에 업로드하는 방식으로 배포합니다.
+## Twenty Application Variables
 
-배포 전제:
+`Settings > Applications > 다우 Slack Agent > 구성`에서 설정합니다.
 
-- Twenty 서버 URL이 있어야 합니다.
-- Twenty API key가 있어야 합니다.
-- 이미 같은 앱을 배포한 적이 있으면 `package.json`의 `version`을 올려야 합니다.
+| 변수명 | 필수 | 설명 |
+| --- | --- | --- |
+| `SLACK_BOT_TOKEN` | 필수 | Slack 답변/승인 카드 전송용 bot token |
+| `SLACK_SIGNING_SECRET` | 필수 | Slack request signature 검증용 secret |
+| `SLACK_VERIFICATION_TOKEN` | 선택 | legacy/fallback 검증 token |
+| `SLACK_APP_TOKEN` | 선택 | 향후 Socket Mode용 예약 변수 |
+| `RUNNER_BASE_URL` | 필수 | Twenty 앱이 호출할 runner base URL. docker compose 기준 `http://slack-proxy:8080` |
+| `RUNNER_SHARED_SECRET` | 필수 | Twenty 앱 -> runner 호출 보호 secret |
+| `TOOL_SHARED_SECRET` | 필수 | runner -> `/s/tools/*` 호출 보호 secret |
+| `TWENTY_BASE_URL` | 필수 | Slack 답변에 들어갈 public Twenty URL |
+| `TWENTY_WORKSPACE_API_KEY` | 필수 권장 | app-scoped schema에 없는 CRM 객체를 조회/쓰기 위한 workspace API key |
+| `ALLOWED_CHANNEL_IDS` | 선택 | 허용 Slack 채널 ID 목록, 쉼표 구분 |
+| `ADMIN_SLACK_USER_IDS` | 선택 | 운영 알림 대상 Slack user IDs |
+| `MANAGEMENT_CHANNEL_ID` | 선택 | 주간 브리핑/운영 알림 채널 |
+| `VENDOR_ALIGNED_STAGE_VALUES` | 선택 | 벤더 필수 점검 대상 opportunity stage values |
+| `QUOTE_STAGE_VALUES` | 선택 | 견적/솔루션 점검 대상 opportunity stage values |
 
-### 7.1 일반적인 배포 순서
+현재 버전은 `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `OPENAI_API_KEY`를 사용하지 않습니다.
+
+## slack-proxy 환경변수
+
+`slack-proxy` 컨테이너에 필요한 값:
+
+| 변수명 | 필수 | 설명 |
+| --- | --- | --- |
+| `PORT` | 선택 | 기본 `8080` |
+| `TWENTY_INTERNAL_URL` | 필수 | docker compose 기준 `http://server:3000` |
+| `RUNNER_SHARED_SECRET` | 필수 | `/internal/slack-requests/process` 보호 secret |
+| `TOOL_SHARED_SECRET` | 필수 | `/s/tools/*` 호출 시 전달할 secret |
+| `CODEX_HOME` | 필수 | Codex 로그인 캐시 저장 경로. persistent volume 권장 |
+| `CODEX_MODEL` | 선택 | Codex 모델 override |
+| `CODEX_WORKDIR` | 선택 | Codex CLI working directory |
+| `CODEX_BINARY` | 선택 | Codex 실행 파일 경로 override |
+
+`RUNNER_SHARED_SECRET`과 `TOOL_SHARED_SECRET`은 Twenty 앱 구성값과 proxy 컨테이너 환경변수가 서로 일치해야 합니다.
+
+## Codex runner 운영
+
+현재 runner는 `slack-proxy` 컨테이너 안에서 `@openai/codex` CLI를 실행합니다.
+
+초기 설정:
+1. `CODEX_HOME`을 persistent volume에 연결합니다.
+2. 컨테이너 안에서 Codex 로그인을 완료합니다.
+3. `/var/lib/codex/auth.json` 같은 인증 캐시가 남는지 확인합니다.
+4. 컨테이너 재시작 후에도 캐시가 유지되는지 확인합니다.
+
+예시:
 
 ```bash
-yarn twenty remote add --api-url https://<your-twenty-domain> --api-key <your-api-key> --as production
-yarn twenty deploy --remote production
-yarn twenty install --remote production
+docker compose exec slack-proxy sh
+codex
+# remote/headless 환경에서는 Device Code 로그인 사용
 ```
 
-## 8. Slack Proxy 배포
-
-### 8.1 왜 필요한가
-
-Twenty self-host 환경에서 `POST /s/*` route trigger 응답이 `201 Created`로 내려가면 Slack Events API, Slash Command, Interactivity가 모두 실패할 수 있습니다.
-이 저장소의 `slack-proxy`는 Slack 요청을 먼저 받아 내부 Twenty route로 전달한 뒤, 성공 응답을 `200 OK`로 정규화해서 Slack에 돌려주는 아주 작은 프록시입니다.
-
-즉 Slack은 아래 URL로 붙습니다.
-
-- `https://<your-twenty-domain>/slack/events`
-- `https://<your-twenty-domain>/slack/commands`
-- `https://<your-twenty-domain>/slack/interactivity`
-
-프록시는 내부적으로 아래 Twenty route를 호출합니다.
-
-- `http://server:3000/s/slack/events`
-- `http://server:3000/s/slack/commands`
-- `http://server:3000/s/slack/interactivity`
-
-### 8.2 프록시 로컬 실행
+CLI smoke test:
 
 ```bash
-yarn slack-proxy:start
+docker compose exec -T slack-proxy sh -c 'printf "Reply only with OK" | codex exec --skip-git-repo-check --full-auto --sandbox read-only --color never --json -'
 ```
 
-기본값:
-
-- `PORT=8080`
-- `TWENTY_INTERNAL_URL=http://server:3000`
-
-### 8.3 Docker 이미지 빌드
+선택적으로 enterprise sales skill을 설치할 수 있습니다. 현재 prompt는 skill이 사용 가능하면 영업 전략 판단에 활용하라고 지시합니다.
 
 ```bash
-docker build -t twenty-slack-proxy ./slack-proxy
+npx skills add https://github.com/refoundai/lenny-skills --skill enterprise-sales
 ```
 
-### 8.4 docker-compose 예시
-
-기존 Twenty compose에 아래 서비스를 추가합니다.
+## docker-compose 예시
 
 ```yaml
+services:
   slack-proxy:
     build:
-      context: ./slack-proxy
+      context: ./twenty_slack_app/slack-proxy
     environment:
       PORT: 8080
       TWENTY_INTERNAL_URL: http://server:3000
+      RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET}
+      TOOL_SHARED_SECRET: ${TOOL_SHARED_SECRET}
+      CODEX_HOME: /var/lib/codex
+    volumes:
+      - codex-home:/var/lib/codex
     depends_on:
       server:
         condition: service_healthy
     restart: always
+
+volumes:
+  codex-home:
 ```
 
-`server` 서비스는 기존대로 내부 `3000`을 열고 있으면 됩니다.
-
-### 8.5 Caddy 예시
-
-`Caddyfile`은 Slack 경로만 `slack-proxy`로 보내고, 나머지는 Twenty `server`로 보내면 됩니다.
+## Caddy 예시
 
 ```caddy
-<your-twenty-domain> {
+<your-domain> {
   handle /slack/* {
     reverse_proxy slack-proxy:8080
   }
@@ -328,112 +353,81 @@ docker build -t twenty-slack-proxy ./slack-proxy
 }
 ```
 
-### 8.6 Azure Linux VM에서 실제 반영 순서
+## 배포
 
-1. 이 저장소 최신 코드를 VM으로 가져옵니다.
-2. `docker-compose.yml`에 `slack-proxy` 서비스를 추가합니다.
-3. `Caddyfile`을 위 구조로 수정합니다.
-4. Twenty server/worker에 `LOGIC_FUNCTION_TYPE=LOCAL`이 들어가 있는지 확인합니다.
-5. 재기동합니다.
+### 1. Twenty 앱 tarball 배포
+
+Windows에서 Azure Linux Twenty 서버로 배포할 때는 custom deploy script를 사용합니다.
 
 ```bash
-docker compose down
-docker compose up -d --build
+yarn deploy:linux-safe --remote azure-prod --install
 ```
 
-6. 헬스 체크 확인:
+API key를 직접 지정할 수도 있습니다.
 
 ```bash
-curl https://<your-twenty-domain>/slack/events -i
-curl http://127.0.0.1:8080/healthz
+node scripts/twenty-linux-deploy.mjs \
+  --api-url https://<your-domain> \
+  --api-key <twenty-api-key> \
+  --install
 ```
 
-주의:
-- `/slack/events`는 `POST` 전용이라 단순 `GET`은 `405`가 정상입니다.
-- `healthz`는 프록시 컨테이너 내부 헬스용입니다.
+스크립트가 하는 일:
+- `yarn twenty build --tarball`
+- manifest path를 Linux 호환 POSIX path로 정규화
+- role permission flag shape 보정
+- tarball upload
+- install mutation 실행
 
-### 8.7 Slack 앱 URL 최종값
+같은 앱을 다시 배포할 때는 `package.json`의 `version`을 올려야 합니다.
 
-Slack 앱 설정에서는 반드시 아래 경로를 사용합니다.
+### 2. slack-proxy 배포
 
-- Events API:
-  `https://<your-twenty-domain>/slack/events`
-- Slash Command `/crm`:
-  `https://<your-twenty-domain>/slack/commands`
-- Interactivity:
-  `https://<your-twenty-domain>/slack/interactivity`
+Twenty 앱만 재설치해서는 runner 코드가 바뀌지 않습니다. `slack-proxy`도 새 코드로 재빌드해야 합니다.
 
-직접 Twenty route인 `/s/slack/...`를 Slack에 등록하지 않습니다.
-
-설치 후에는 Twenty UI의 `Settings > Applications`에서도 앱 설치 상태를 확인할 수 있습니다.
-
-### 7.2 Windows에서 Azure Linux Twenty 서버로 배포할 때
-
-이 저장소는 Windows에서 빌드한 manifest 경로를 Linux 서버가 그대로 읽다가 깨지는 문제를 피하기 위해 `linux-safe` 배포 스크립트를 같이 제공합니다.
-
-권장 명령:
+Azure VM 예시:
 
 ```bash
-yarn deploy:linux-safe --remote production --install
+cd ~/daoudata/twenty/twenty_slack_app
+git fetch origin
+git checkout codex/lead-package-tool
+git pull --ff-only origin codex/lead-package-tool
+
+cd ~/daoudata/twenty
+docker compose up -d --build slack-proxy
+docker compose logs --tail=80 slack-proxy
+docker compose ps slack-proxy
 ```
 
-이 스크립트가 하는 일:
+정상 확인:
 
-- build 결과의 Windows 경로 구분자를 POSIX 경로로 정규화
-- 설치 시 필요한 metadata 요청 헤더를 보정
-- role permission flag shape를 Twenty 서버가 기대하는 형태로 정규화
-- install 실패 시 GraphQL validation 세부 오류를 그대로 출력
+```bash
+docker compose exec -T slack-proxy sh -c 'wget -S -O- http://127.0.0.1:8080/internal/slack-requests/process 2>&1 || true'
+```
 
-운영 환경이 Azure Linux VM이거나, 로컬 개발 환경이 Windows인 경우에는 이 명령을 우선 사용하는 것이 안전합니다.
+`GET` 요청은 `405 Method Not Allowed`가 정상입니다. 실제 runner endpoint는 `POST` + `x-runner-shared-secret`만 허용합니다.
 
-### 7.3 배포 후 확인할 것
-
-1. `Settings > Applications`에서 앱이 설치되었는지 확인
-2. 앱 구성 변수 값을 모두 입력했는지 확인
-3. Slack App Request URL이 올바른지 확인
-4. Slack 채널에서 `@멘션` 또는 `/crm` 테스트 메시지를 보내 동작 확인
-
-## 8. 설치 후 초기 설정값
-
-이 앱은 Twenty의 설치된 앱 상세 화면에서 보이는 `구성` 탭만 사용합니다.
-현재 Twenty tarball 앱 배포 흐름과 공식 문서를 기준으로, 실제 운영에 필요한 값은 모두 `applicationVariables`로 선언되어 있으며 `Settings > Applications > 다우 Slack Agent > 구성`에서 입력하면 됩니다.
-
-주의:
-- `0.1.9`부터 AI 연동 변수명이 `OPENAI_*`에서 `ANTHROPIC_*`로 변경됩니다. 기존 값을 쓰고 있었다면 `구성` 탭에서 다시 입력해야 합니다.
-
-### 8.1 애플리케이션 구성 변수
-
-| 변수명 | 필수 | 설명 | 권장 예시 | 비워둘 때 동작 |
-| --- | --- | --- | --- | --- |
-| `ALLOWED_CHANNEL_IDS` | 선택 | 처리 허용 Slack 채널 ID 목록. 쉼표 구분 | `C01234567,C07654321` | 비어 있으면 모든 채널 허용 |
-| `ADMIN_SLACK_USER_IDS` | 선택 | 향후 관리자 DM/운영 알림 확장을 위한 예약 변수. 현재 버전에서는 직접 사용하지 않음 | `U01AAAAAA,U02BBBBBB` | 영향 없음 |
-| `MANAGEMENT_CHANNEL_ID` | 선택 | 주간 브리핑과 운영 요약을 보낼 채널 ID | `C09MANAGER1` | 비어 있으면 관리 채널 전송 생략 |
-| `VENDOR_ALIGNED_STAGE_VALUES` | 선택 | 주 벤더가 있어야 하는 영업기회 단계 값 목록 | `VENDOR_ALIGNED,DISCOVERY_POC,QUOTED,NEGOTIATION,CLOSED_WON,CLOSED_LOST,ON_HOLD` | 코드 기본값 사용 |
-| `QUOTE_STAGE_VALUES` | 선택 | 솔루션/파트너 체크가 필요한 단계 값 목록 | `QUOTED,NEGOTIATION,CLOSED_WON,CLOSED_LOST` | 코드 기본값 사용 |
-| `SLACK_BOT_TOKEN` | 필수 | Slack 응답 전송용 봇 토큰 | `xoxb-...` | 요청 처리 실패 |
-| `SLACK_SIGNING_SECRET` | 필수 | Slack 서명 검증용 secret | `abcd1234...` | Slack 검증 실패 |
-| `SLACK_VERIFICATION_TOKEN` | 선택 | raw body 검증이 어려운 환경에서 쓰는 fallback token | Slack 앱의 legacy token | 기본 검증만 수행 |
-| `SLACK_APP_TOKEN` | 선택 | 향후 Socket Mode 대응용 app token | `xapp-...` | 현재 버전에서는 미사용 |
-| `ANTHROPIC_API_KEY` | 필수 | 의도 분류와 초안 생성을 위한 Anthropic API key | `sk-ant-...` | AI 분류/초안 생성 비활성화 |
-| `ANTHROPIC_MODEL` | 선택 | Anthropic Claude 모델 ID | `claude-sonnet-4-6` | `claude-sonnet-4-6` 사용 |
-| `TWENTY_BASE_URL` | 필수 | Slack 답변에 넣을 Twenty 레코드 링크의 기준 URL | `https://crm.example.com` | 레코드 링크 생성 실패 |
-
-초기 설정 권장값:
-
-- 운영 시작 전에는 `ALLOWED_CHANNEL_IDS`를 꼭 지정하는 편이 안전합니다.
-- `MANAGEMENT_CHANNEL_ID`를 비우면 주간 브리핑과 운영 요약은 Slack으로 전송되지 않습니다.
-- `ANTHROPIC_MODEL`을 비우면 기본값 `claude-sonnet-4-6`을 사용합니다.
-
-## 9. 로컬 개발
-
-기본 명령:
+## 로컬 개발
 
 ```bash
 yarn
-yarn lint
-yarn typecheck
 yarn test
+yarn typecheck
+yarn lint
 yarn build
+```
+
+이 Windows 환경에서 `yarn typecheck`가 shell PATH 문제로 실패하면 직접 실행합니다.
+
+```bash
+./node_modules/.bin/tsc.cmd -p tsconfig.typecheck.json
+```
+
+단일 테스트:
+
+```bash
+yarn vitest run src/__tests__/slack-proxy.test.ts
+yarn vitest run src/__tests__/crm-write.test.ts
 ```
 
 통합 테스트:
@@ -442,92 +436,71 @@ yarn build
 RUN_TWENTY_INTEGRATION_TESTS=true yarn test:integration
 ```
 
-배포 산출물은 `.twenty/output` 아래에 생성됩니다.
+## ATDD 문서
 
-## 10. 운영 체크리스트
+Acceptance scenarios:
+- `docs/atdd/codex-runner-slack-processing.md`
+- `docs/atdd/slack-thread-memory.md`
 
-운영 시작 전에 아래를 확인하는 것이 좋습니다.
+중요 회귀 테스트:
+- `src/__tests__/slack-proxy.test.ts`
+- `src/__tests__/codex-tools.test.ts`
+- `src/__tests__/crm-write.test.ts`
+- `src/__tests__/slack-thread-context-service.test.ts`
+- `src/__tests__/slack-orchestrator.test.ts`
 
-1. Twenty 앱이 설치되어 있는가
-2. `구성` 탭에서 `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `TWENTY_BASE_URL`가 모두 입력되어 있는가
-3. Slack App Request URL이 현재 Twenty 도메인과 일치하는가
-4. 봇이 실제로 사용할 채널에 초대되어 있는가
-5. `ALLOWED_CHANNEL_IDS`가 의도한 운영 채널과 맞는가
-6. 주간 브리핑용 `MANAGEMENT_CHANNEL_ID`가 필요한 경우 설정되어 있는가
+## 운영 체크리스트
 
-## 11. 트러블슈팅
+배포 후 확인:
+- Twenty 앱 버전이 최신인지 확인합니다.
+- `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `RUNNER_BASE_URL`, `RUNNER_SHARED_SECRET`, `TOOL_SHARED_SECRET`, `TWENTY_BASE_URL`, `TWENTY_WORKSPACE_API_KEY`가 설정되어 있는지 확인합니다.
+- proxy 컨테이너에 `RUNNER_SHARED_SECRET`, `TOOL_SHARED_SECRET`, `TWENTY_INTERNAL_URL`, `CODEX_HOME`이 설정되어 있는지 확인합니다.
+- `CODEX_HOME`이 persistent volume인지 확인합니다.
+- Codex CLI 로그인이 유지되는지 확인합니다.
+- Caddy가 `/slack/*`를 `slack-proxy:8080`으로 보내는지 확인합니다.
+- Slack App URL이 `/slack/events`, `/slack/commands`, `/slack/interactivity`인지 확인합니다.
+- Slack 채널에 봇이 초대되어 있는지 확인합니다.
 
-### 11.1 설치는 되는데 앱이 동작하지 않을 때
+## 트러블슈팅
 
-먼저 아래를 확인합니다.
+### Slack에서 봇 답변이 없을 때
 
-- `구성` 탭 변수 값이 비어 있지 않은지
-- Slack App URL이 현재 배포 도메인을 가리키는지
-- Slack 봇이 채널에 참여해 있는지
-- `ALLOWED_CHANNEL_IDS`가 현재 채널을 막고 있지 않은지
+- `docker compose logs -f slack-proxy`로 proxy 요청이 들어오는지 확인합니다.
+- Twenty UI의 `Slack 요청`에서 상태가 `RECEIVED`, `PROCESSING`, `ERROR` 중 어디에 머무는지 확인합니다.
+- `RUNNER_BASE_URL`이 Twenty server 컨테이너에서 접근 가능한 주소인지 확인합니다.
+- `RUNNER_SHARED_SECRET`이 Twenty 앱과 proxy에서 같은 값인지 확인합니다.
 
-### 11.2 Windows에서 빌드한 뒤 Azure Linux Twenty 서버에 설치가 안 될 때
+### `Codex returned an unsupported decision shape`
 
-일반 `yarn twenty deploy` 대신 아래 명령을 사용합니다.
+- runner가 허용하지 않는 JSON shape를 Codex가 반환한 경우입니다.
+- 현재 runner는 `tool_call`, `final(query/write_draft/applied)`, `error`만 허용합니다.
+- 같은 증상이 반복되면 `slack-proxy/runner.mjs` prompt와 `normalizeDecision` 테스트를 함께 보강해야 합니다.
 
-```bash
-yarn deploy:linux-safe --remote production --install
-```
+### 리드 등록이 회사만 생성될 때
 
-이유:
+- 최신 버전에서는 `create-lead-package`가 company/person/opportunity/note/task action set을 approval draft로 만들고, 승인 전 mutation을 실행하지 않습니다.
+- Twenty 앱과 `slack-proxy`가 모두 같은 최신 커밋으로 배포됐는지 확인합니다.
+- `create-lead-package` 후 `create-record`가 실행되면 버전이 오래된 proxy일 가능성이 큽니다.
 
-- Windows manifest 경로가 Linux 설치 환경과 충돌할 수 있습니다.
-- custom deploy 스크립트가 path normalization과 install 오류 상세 출력을 함께 처리합니다.
+### `Object company doesn't have any "status" field`
 
-### 11.3 `Validation errors occurred while syncing application manifest metadata`가 보일 때
+- CRM object metadata에 없는 필드를 mutation에 넣었을 때 발생합니다.
+- 현재 write layer는 metadata field allowlist와 select value normalization을 통해 unsupported field를 제거합니다.
+- 계속 발생하면 `TWENTY_WORKSPACE_API_KEY`와 metadata 조회 권한을 확인합니다.
 
-이 메시지는 실제 원인을 숨기는 상위 오류인 경우가 많습니다.
-이 저장소의 `deploy:linux-safe` 스크립트는 가능하면 GraphQL `extensions.errors` 상세 payload를 출력하도록 되어 있으므로, 같은 문제가 다시 나면 해당 출력 기준으로 원인을 좁히는 것이 좋습니다.
+### `This API Key is revoked`
 
-### 11.4 같은 버전으로 다시 배포가 안 될 때
+- 로컬 `~/.twenty/config.json`의 remote API key가 폐기된 상태입니다.
+- 새 Twenty API key로 remote를 다시 등록하거나 deploy script에 `--api-key`를 직접 전달합니다.
 
-Twenty 앱은 같은 버전 재업로드가 막힐 수 있으므로 `package.json`의 `version`을 올린 뒤 다시 배포해야 합니다.
+### `/slack/events` GET이 405를 반환할 때
 
-## 12. 현재 제약
+정상입니다. Slack route와 internal runner route는 POST 전용입니다.
 
-- 승인자 필드는 현재 Slack user id를 저장합니다.
-- 사용자 이메일 기반의 Twenty workspace member 권한 매핑은 아직 구현되지 않았습니다.
-- front component는 아직 없고, 현재 앱은 객체/뷰/로직 함수 중심 구성입니다.
-- Slack 전체 채널 수집이 아니라 `@멘션`, `/crm`, 인터랙션 요청 중심으로 동작합니다.
+## 현재 제약
 
-## 13. 빠른 시작 예시
-
-1. Twenty 서버 remote 등록
-
-```bash
-yarn twenty remote add --api-url https://crm.example.com --api-key <api-key> --as production
-```
-
-2. Windows에서 Azure Linux 서버로 배포
-
-```bash
-yarn deploy:linux-safe --remote production --install
-```
-
-3. Twenty `구성` 탭에서 변수 입력
-
-4. Slack App URL 등록
-
-- Events API: `https://crm.example.com/s/slack/events`
-- Slash Command: `https://crm.example.com/s/slack/commands`
-- Interactivity: `https://crm.example.com/s/slack/interactivity`
-
-5. Slack에서 테스트
-
-```text
-@다우 Slack Agent 이번달 신규 영업기회 알려줘
-/crm 미래금융이 Citrix VDI 검토 중이고 에이맥스 공동영업 예정
-```
-
-6. 승인 카드에서 `반영` 버튼 클릭
-
-## 14. 참고
-
-- Twenty 앱 공식 문서: [Getting Started](https://docs.twenty.com/developers/extend/apps/getting-started)
-- Twenty 앱 배포 문서: [Publishing](https://docs.twenty.com/developers/extend/apps/publishing)
-- Twenty 예제 앱: [postcard example](https://github.com/twentyhq/twenty/tree/main/packages/twenty-apps/examples/postcard)
+- 공개 웹 검색 기반 lead enrichment는 v1 범위에서 제외했습니다.
+- Codex runner는 요청마다 새 loop를 실행합니다. 같은 Slack thread의 문맥은 `slackThreadContext`를 prompt에 주입하는 방식으로 이어갑니다.
+- 공식 Slack Codex app이 아니라 커스텀 `slack-proxy` 컨테이너가 Codex CLI를 실행하는 구조입니다.
+- 사용자 이메일 기반 Twenty workspace member 권한 매핑은 아직 구현되지 않았습니다.
+- front component는 없고 객체/뷰/로직 함수/HTTP route 중심 앱입니다.
