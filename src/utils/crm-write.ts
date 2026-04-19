@@ -1234,6 +1234,7 @@ export const buildLeadPackageDraft = async (
           companyName,
         })
       : null;
+  const contactLabel = contactName ?? person?.fullName ?? null;
   const opportunityName = buildLeadPackageOpportunityName({
     companyName,
     solutionName: payload.solutionName,
@@ -1313,7 +1314,7 @@ export const buildLeadPackageDraft = async (
         buildLeadReviewItem({
           kind: 'person',
           decision: 'SKIP',
-          target: contactName ?? primaryEmail ?? person.fullName,
+          target: contactLabel ?? primaryEmail ?? person.fullName,
           matchedRecord: person.fullName,
           reason: '기존 담당자 레코드를 재사용합니다.',
           fields: [],
@@ -1328,7 +1329,7 @@ export const buildLeadPackageDraft = async (
     data: {
       name: opportunityName,
       companyName,
-      ...(contactName ? { pointOfContactName: contactName } : {}),
+      ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
       stage: 'IDENTIFIED',
       ...(budgetAmount ? { amount: budgetAmount } : {}),
       ...(closeDate ? { closeDate } : {}),
@@ -1355,7 +1356,7 @@ export const buildLeadPackageDraft = async (
       title: noteTitle,
       body: buildLeadPackageNoteBody(payload),
       companyName,
-      ...(contactName ? { pointOfContactName: contactName } : {}),
+      ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
       opportunityName,
     },
   });
@@ -1378,7 +1379,7 @@ export const buildLeadPackageDraft = async (
         title: taskTitle,
         body: payload.nextAction,
         companyName,
-        ...(contactName ? { pointOfContactName: contactName } : {}),
+        ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
         opportunityName,
       },
     });
@@ -1424,7 +1425,7 @@ export const buildLeadPackageDraft = async (
         ? {
             person: {
               decision: person ? 'REUSE' : 'CREATE',
-              label: contactName ?? primaryEmail ?? '담당자',
+              label: contactLabel ?? primaryEmail ?? '담당자',
               matchedRecord: person
                 ? {
                     id: person.id,

@@ -933,6 +933,317 @@ describe('slack proxy runner', () => {
     });
   });
 
+  it('does not allow create-record mutations after a lead package preview', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const runCodexDecision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'create-lead-package',
+        payload: {
+          companyName: '서광건설엔지니어링',
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'create-record',
+        payload: {
+          kind: 'company',
+          data: {
+            name: '서광건설엔지니어링',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'write_draft',
+        message: '신규 리드 등록 승인 초안을 준비했습니다.',
+        draft: {
+          summary: '모델 초안',
+          confidence: 0.5,
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+          actions: [],
+          warnings: [],
+        },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '신규 리드 등록 승인 초안을 준비했습니다.',
+            outcome: 'write_draft',
+          },
+          summary: '리드 등록 승인을 기다린다.',
+          selectedEntities: {},
+          lastQuerySnapshot: null,
+          pendingApproval: {
+            sourceSlackRequestId: 'request-lead-guard',
+            summary: '리드 등록 초안',
+            actions: [],
+            review: null,
+            status: 'AWAITING_CONFIRMATION',
+          },
+        },
+      });
+
+    await processSlackRequestWithCodex({
+      slackRequestId: 'request-lead-guard',
+      toolClient: {
+        callTool: async (
+          endpoint: string,
+          payload: Record<string, unknown> = {},
+        ) => {
+          toolCalls.push([endpoint, payload]);
+
+          if (endpoint === 'load-slack-request') {
+            return {
+              ok: true,
+              slackRequest: {
+                id: 'request-lead-guard',
+                normalizedText: 'CRM에 신규 리드로 등록해줘',
+              },
+            };
+          }
+
+          if (endpoint === 'get-tool-catalog') {
+            return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-lead-guard',
+                summaryJson: { text: '' },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
+          }
+
+          if (endpoint === 'create-lead-package') {
+            return {
+              ok: true,
+              draft: {
+                summary: '서광건설엔지니어링 신규 리드 등록 초안',
+                confidence: 0.93,
+                sourceText: 'CRM에 신규 리드로 등록해줘',
+                actions: [
+                  {
+                    kind: 'opportunity',
+                    operation: 'create',
+                    data: {
+                      name: '서광건설엔지니어링 신규 리드',
+                    },
+                  },
+                ],
+                warnings: [],
+              },
+            };
+          }
+
+          if (endpoint === 'save-write-draft') {
+            return {
+              id: 'request-lead-guard',
+              processingStatus: 'AWAITING_CONFIRMATION',
+            };
+          }
+
+          throw new Error(`Unexpected tool call: ${endpoint}`);
+        },
+      },
+      runCodexDecision,
+    });
+
+    expect(toolCalls).not.toContainEqual([
+      'create-record',
+      expect.anything(),
+    ]);
+    expect(toolCalls).toContainEqual([
+      'save-write-draft',
+      expect.objectContaining({
+        draft: expect.objectContaining({
+          summary: '서광건설엔지니어링 신규 리드 등록 초안',
+          actions: [
+            {
+              kind: 'opportunity',
+              operation: 'create',
+              data: {
+                name: '서광건설엔지니어링 신규 리드',
+              },
+            },
+          ],
+        }),
+      }),
+    ]);
+  });
+
+  it('uses the lead package tool draft instead of model-supplied draft actions', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const runCodexDecision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: 'tool_call',
+        endpoint: 'create-lead-package',
+        payload: {
+          companyName: '서광건설엔지니어링',
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: 'final',
+        mode: 'write_draft',
+        message: '신규 리드 등록 승인 초안을 준비했습니다.',
+        draft: {
+          summary: '모델이 덮어쓴 초안',
+          confidence: 0.1,
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+          actions: [
+            {
+              kind: 'company',
+              operation: 'create',
+              data: {
+                name: '잘못된 회사',
+              },
+            },
+          ],
+          warnings: ['모델 경고'],
+        },
+        threadContextPatch: {
+          assistantTurn: {
+            text: '신규 리드 등록 승인 초안을 준비했습니다.',
+            outcome: 'write_draft',
+          },
+          summary: '리드 등록 승인을 기다린다.',
+          selectedEntities: {},
+          lastQuerySnapshot: null,
+          pendingApproval: {
+            sourceSlackRequestId: 'request-lead-grounded',
+            summary: '리드 등록 초안',
+            actions: [],
+            review: null,
+            status: 'AWAITING_CONFIRMATION',
+          },
+        },
+      });
+
+    await processSlackRequestWithCodex({
+      slackRequestId: 'request-lead-grounded',
+      toolClient: {
+        callTool: async (
+          endpoint: string,
+          payload: Record<string, unknown> = {},
+        ) => {
+          toolCalls.push([endpoint, payload]);
+
+          if (endpoint === 'load-slack-request') {
+            return {
+              ok: true,
+              slackRequest: {
+                id: 'request-lead-grounded',
+                normalizedText: 'CRM에 신규 리드로 등록해줘',
+              },
+            };
+          }
+
+          if (endpoint === 'get-tool-catalog') {
+            return toolCatalogResponse;
+          }
+
+          if (endpoint === 'load-thread-context') {
+            return {
+              ok: true,
+              threadContext: {
+                threadKey: 'T1:C1:thread-lead-grounded',
+                summaryJson: { text: '' },
+                recentTurnsJson: [],
+                contextJson: {
+                  selectedCompanyIds: [],
+                  selectedPersonIds: [],
+                  selectedOpportunityIds: [],
+                  selectedLicenseIds: [],
+                  lastQuerySnapshot: null,
+                },
+                pendingApprovalJson: null,
+                lastSlackRequestId: null,
+                lastRepliedAt: null,
+              },
+            };
+          }
+
+          if (endpoint === 'create-lead-package') {
+            return {
+              ok: true,
+              draft: {
+                summary: '서광건설엔지니어링 신규 리드 등록 초안',
+                confidence: 0.93,
+                sourceText: 'CRM에 신규 리드로 등록해줘',
+                actions: [
+                  {
+                    kind: 'opportunity',
+                    operation: 'create',
+                    data: {
+                      name: '서광건설엔지니어링 신규 리드',
+                    },
+                  },
+                ],
+                warnings: [],
+                review: {
+                  overview: '리드 등록 패키지 초안',
+                  opinion: '승인 후 생성합니다.',
+                  items: [],
+                },
+              },
+            };
+          }
+
+          if (endpoint === 'save-write-draft') {
+            return {
+              id: 'request-lead-grounded',
+              processingStatus: 'AWAITING_CONFIRMATION',
+            };
+          }
+
+          throw new Error(`Unexpected tool call: ${endpoint}`);
+        },
+      },
+      runCodexDecision,
+    });
+
+    expect(toolCalls).toContainEqual([
+      'save-write-draft',
+      expect.objectContaining({
+        draft: {
+          summary: '서광건설엔지니어링 신규 리드 등록 초안',
+          confidence: 0.93,
+          sourceText: 'CRM에 신규 리드로 등록해줘',
+          actions: [
+            {
+              kind: 'opportunity',
+              operation: 'create',
+              data: {
+                name: '서광건설엔지니어링 신규 리드',
+              },
+            },
+          ],
+          warnings: [],
+          review: {
+            overview: '리드 등록 패키지 초안',
+            opinion: '승인 후 생성합니다.',
+            items: [],
+          },
+        },
+      }),
+    ]);
+  });
+
   it('rejects write_draft finals that are not grounded in update/delete tool results', async () => {
     const toolCalls: Array<[string, Record<string, unknown>]> = [];
     const runCodexDecision = vi

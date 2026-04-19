@@ -710,6 +710,18 @@ const enrichWriteDraftWithApprovalHistory = ({
     collectHistoryResults(history, 'create-lead-package')
       .map((result) => toPlainRecord(result?.draft))
       .find(Boolean) ?? null;
+
+  if (leadPackageDraft) {
+    return {
+      ...leadPackageDraft,
+      sourceText:
+        typeof leadPackageDraft.sourceText === 'string' &&
+        leadPackageDraft.sourceText.length > 0
+          ? leadPackageDraft.sourceText
+          : requestText,
+    };
+  }
+
   const previewResults = collectApprovalPreviewResults(history);
   const plannedActions = previewResults
     .map((result) => toPlainRecord(result?.plannedAction))
@@ -721,15 +733,10 @@ const enrichWriteDraftWithApprovalHistory = ({
   const existingWarnings = Array.isArray(baseDraft.warnings)
     ? baseDraft.warnings.filter((warning) => typeof warning === 'string')
     : [];
-  const historyActions = Array.isArray(leadPackageDraft?.actions)
-    ? leadPackageDraft.actions
-    : plannedActions;
-  const historyWarnings = Array.isArray(leadPackageDraft?.warnings)
-    ? leadPackageDraft.warnings.filter((warning) => typeof warning === 'string')
-    : [];
+  const historyActions = plannedActions;
+  const historyWarnings = [];
 
   return {
-    ...(leadPackageDraft ?? {}),
     ...baseDraft,
     sourceText:
       typeof baseDraft.sourceText === 'string' && baseDraft.sourceText.length > 0
@@ -739,7 +746,6 @@ const enrichWriteDraftWithApprovalHistory = ({
     warnings: existingWarnings.length > 0 ? existingWarnings : historyWarnings,
     review:
       toPlainRecord(baseDraft.review) ??
-      toPlainRecord(leadPackageDraft?.review) ??
       (reviewItems.length > 0
         ? {
             overview:
@@ -766,6 +772,10 @@ const shouldRejectFinalDecision = ({ decision, history }) => {
     return 'Every successful final response must include threadContextPatch.';
   }
 
+  if (hasLeadPackageToolHistory(history) && decision.mode !== 'write_draft') {
+    return 'create-lead-package is approval-only and must finish with write_draft.';
+  }
+
   if (hasCreateToolHistory(history) && decision.mode !== 'applied') {
     return 'Immediate create mutations already ran, so the final mode must be applied.';
   }
@@ -788,14 +798,6 @@ const shouldRejectFinalDecision = ({ decision, history }) => {
     !hasLeadPackageToolHistory(history)
   ) {
     return 'write_draft final mode requires either an update/delete approval preview or a create-lead-package preview before approval.';
-  }
-
-  if (
-    decision.mode !== 'write_draft' &&
-    hasLeadPackageToolHistory(history) &&
-    !hasCreateToolHistory(history)
-  ) {
-    return 'create-lead-package is approval-only and must finish with write_draft.';
   }
 
   return null;
@@ -1212,6 +1214,18 @@ export const processSlackRequestWithCodex = async ({
     if (decision.kind === 'tool_call') {
       if (!allowedModelToolNames.has(decision.toolName)) {
         throw new Error(`Disallowed Codex tool call: ${decision.toolName}`);
+      }
+
+      if (
+        decision.toolName === 'create-record' &&
+        hasLeadPackageToolHistory(history)
+      ) {
+        history.push({
+          type: 'runner_feedback',
+          message:
+            'create-record cannot run after create-lead-package; finish with write_draft using the lead package draft.',
+        });
+        continue;
       }
 
       const result = await effectiveToolClient.callTool(

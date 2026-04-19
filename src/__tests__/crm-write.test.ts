@@ -250,6 +250,69 @@ describe('crm write helpers', () => {
     ]);
   });
 
+  it('links email-only lead contacts to generated opportunity, note, and task actions', async () => {
+    const { buildLeadPackageDraft } = await import('src/utils/crm-write');
+
+    query
+      .mockResolvedValueOnce({
+        companies: {
+          edges: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        people: {
+          edges: [
+            {
+              node: {
+                id: 'person-1',
+                name: {
+                  firstName: '박성훈',
+                  lastName: '',
+                },
+                emails: {
+                  primaryEmail: 'sh.park@seogwang-demo.co.kr',
+                },
+                company: {
+                  name: '서광건설엔지니어링',
+                },
+              },
+            },
+          ],
+        },
+      });
+
+    const result = await buildLeadPackageDraft({
+      companyName: '서광건설엔지니어링',
+      primaryEmail: 'sh.park@seogwang-demo.co.kr',
+      solutionName: 'Autodesk AEC Collection',
+      nextAction: '라이선스 견적 초안 제안',
+      sourceText: 'CRM에 신규 리드로 등록해줘',
+    });
+
+    expect(result.draft.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'opportunity',
+          data: expect.objectContaining({
+            pointOfContactName: '박성훈',
+          }),
+        }),
+        expect.objectContaining({
+          kind: 'note',
+          data: expect.objectContaining({
+            pointOfContactName: '박성훈',
+          }),
+        }),
+        expect.objectContaining({
+          kind: 'task',
+          data: expect.objectContaining({
+            pointOfContactName: '박성훈',
+          }),
+        }),
+      ]),
+    );
+  });
+
   it('removes helper lookup fields before opportunity mutations', async () => {
     const { applyApprovedDraft } = await import('src/utils/crm-write');
 
