@@ -102,6 +102,59 @@ export const QUERY_TOOL_INPUT_SCHEMA = {
   required: ['query'],
 } as const;
 
+export const LEAD_PACKAGE_TOOL_INPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    companyName: {
+      type: 'string',
+    },
+    contactName: {
+      type: 'string',
+    },
+    jobTitle: {
+      type: 'string',
+    },
+    primaryEmail: {
+      type: 'string',
+    },
+    phone: {
+      type: 'string',
+    },
+    vendorName: {
+      type: 'string',
+    },
+    solutionName: {
+      type: 'string',
+    },
+    currentSituation: {
+      type: 'string',
+    },
+    expectedScale: {
+      type: 'string',
+    },
+    budgetText: {
+      type: 'string',
+    },
+    budgetAmount: {
+      type: 'number',
+    },
+    targetQuarterOrDate: {
+      type: 'string',
+    },
+    sourceChannel: {
+      type: 'string',
+    },
+    nextAction: {
+      type: 'string',
+    },
+    sourceText: {
+      type: 'string',
+    },
+  },
+  required: ['companyName', 'sourceText'],
+} as const;
+
 const slackRequestIdInputSchema = {
   type: 'object',
   additionalProperties: false,
@@ -174,6 +227,8 @@ const approvalPolicy =
 
 const immediateCreatePolicy =
   'Execute immediately. Return the created record id, then persist the applied result through the internal runner flow.';
+const leadPackagePolicy =
+  'Approval-only. Use for 신규 리드 등록, 잠재고객 등록, CRM 리드 패키지 생성 requests. Build a deterministic multi-record draft and finish with mode="write_draft".';
 
 export const TOOL_CATALOG: ToolCatalog = {
   modelVisibleTools: [
@@ -217,6 +272,14 @@ export const TOOL_CATALOG: ToolCatalog = {
       description: 'Create a CRM record immediately',
       policy: immediateCreatePolicy,
       inputSchema: CREATE_TOOL_INPUT_SCHEMA,
+      visibility: 'model_visible',
+    }),
+    toolDescriptor({
+      name: 'create-lead-package',
+      description:
+        'Build an approval-first lead registration package for company, person, opportunity, note, and optional task',
+      policy: leadPackagePolicy,
+      inputSchema: LEAD_PACKAGE_TOOL_INPUT_SCHEMA,
       visibility: 'model_visible',
     }),
     toolDescriptor({

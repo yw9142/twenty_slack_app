@@ -57,4 +57,53 @@ describe('slack orchestrator approval reply', () => {
     expect(planSection.text?.text).toContain('companyName: A은행');
     expect(opinionSection.text?.text).toContain('기존 기회 업데이트가 자연스럽습니다.');
   });
+
+  it('renders reuse decisions explicitly when approval review says a record is reused', () => {
+    const reply = buildApprovalReply({
+      slackRequestId: 'request-2',
+      draft: {
+        summary: '서광건설엔지니어링 신규 리드 등록 초안입니다.',
+        confidence: 0.93,
+        sourceText: 'CRM에 신규 리드로 등록해줘',
+        actions: [
+          {
+            kind: 'opportunity',
+            operation: 'create',
+            data: {
+              name: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+            },
+          },
+        ],
+        warnings: [],
+        review: {
+          overview: '리드 등록 패키지 승인 초안',
+          opinion: '회사와 담당자 중복 여부를 확인한 뒤 승인하세요.',
+          items: [
+            {
+              kind: 'company',
+              decision: 'SKIP',
+              target: '서광건설엔지니어링',
+              matchedRecord: '서광건설엔지니어링',
+              reason: '기존 회사 레코드를 재사용합니다.',
+              fields: [],
+            },
+            {
+              kind: 'person',
+              decision: 'SKIP',
+              target: '박성훈',
+              matchedRecord: '박성훈',
+              reason: '기존 담당자 레코드를 재사용합니다.',
+              fields: [],
+            },
+          ],
+        },
+      },
+    });
+
+    const planSection = reply.blocks?.[1] as { text?: { text?: string } };
+
+    expect(planSection.text?.text).toContain('기존 레코드 재사용');
+    expect(planSection.text?.text).toContain('기존 회사 레코드를 재사용합니다.');
+    expect(planSection.text?.text).toContain('기존 담당자 레코드를 재사용합니다.');
+  });
 });

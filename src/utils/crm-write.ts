@@ -4,9 +4,11 @@ import type {
   BasicOpportunityRecord,
   BasicPersonRecord,
   CrmActionRecord,
-  DraftReviewItem,
   CrmWriteDraft,
+  DraftReviewItem,
   EntityKind,
+  LeadPackageDraftResult,
+  LeadPackagePayload,
 } from 'src/types/slack-agent';
 import { createCoreClient } from 'src/utils/core-client';
 import {
@@ -701,6 +703,150 @@ const buildReviewFields = (
       value: String(value),
     }));
 
+const buildLeadPackageOpportunityName = ({
+  companyName,
+  solutionName,
+  vendorName,
+}: {
+  companyName: string;
+  solutionName?: string;
+  vendorName?: string;
+}): string => {
+  const subject = normalizeLookupValue(solutionName) ?? normalizeLookupValue(vendorName);
+
+  return subject
+    ? `${companyName} ${subject} 신규 리드`
+    : `${companyName} 신규 리드`;
+};
+
+const toQuarterEndDate = (year: string, quarter: string): string => {
+  const quarterNumber = Number(quarter);
+
+  if (quarterNumber === 1) {
+    return `${year}-03-31`;
+  }
+
+  if (quarterNumber === 2) {
+    return `${year}-06-30`;
+  }
+
+  if (quarterNumber === 3) {
+    return `${year}-09-30`;
+  }
+
+  return `${year}-12-31`;
+};
+
+const parseLeadCloseDate = (value: string | undefined): string | null => {
+  const normalizedValue = normalizeLookupValue(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const dateMatch = normalizedValue.match(/(\d{4})-(\d{2})-(\d{2})/);
+
+  if (dateMatch) {
+    return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+  }
+
+  const quarterMatch = normalizedValue.match(/(\d{4})\s*년?\s*([1-4])\s*분기/);
+
+  if (quarterMatch) {
+    return toQuarterEndDate(quarterMatch[1], quarterMatch[2]);
+  }
+
+  return null;
+};
+
+const parseLeadBudgetAmount = ({
+  budgetAmount,
+  budgetText,
+}: Pick<LeadPackagePayload, 'budgetAmount' | 'budgetText'>): number | null => {
+  if (typeof budgetAmount === 'number' && Number.isFinite(budgetAmount)) {
+    return budgetAmount;
+  }
+
+  const normalizedBudgetText = normalizeLookupValue(budgetText);
+
+  if (!normalizedBudgetText) {
+    return null;
+  }
+
+  const eokMatch = normalizedBudgetText.match(/(\d+(?:\.\d+)?)\s*억/);
+
+  if (eokMatch) {
+    return Math.round(Number(eokMatch[1]) * 100_000_000);
+  }
+
+  const manMatch = normalizedBudgetText.match(/(\d+(?:\.\d+)?)\s*만/);
+
+  if (manMatch) {
+    return Math.round(Number(manMatch[1]) * 10_000);
+  }
+
+  return null;
+};
+
+const buildLeadPackageNoteBody = (
+  payload: LeadPackagePayload,
+): string =>
+  [
+    `고객사: ${payload.companyName}`,
+    normalizeLookupValue(payload.contactName)
+      ? `담당자: ${payload.contactName}`
+      : null,
+    normalizeLookupValue(payload.jobTitle) ? `직책: ${payload.jobTitle}` : null,
+    normalizeLookupValue(payload.primaryEmail)
+      ? `이메일: ${payload.primaryEmail}`
+      : null,
+    normalizeLookupValue(payload.phone) ? `연락처: ${payload.phone}` : null,
+    normalizeLookupValue(payload.solutionName) || normalizeLookupValue(payload.vendorName)
+      ? `관심 솔루션/벤더: ${normalizeLookupValue(payload.solutionName) ?? '미상'} / ${normalizeLookupValue(payload.vendorName) ?? '미상'}`
+      : null,
+    normalizeLookupValue(payload.currentSituation)
+      ? `현재 상황: ${payload.currentSituation}`
+      : null,
+    normalizeLookupValue(payload.expectedScale)
+      ? `예상 규모: ${payload.expectedScale}`
+      : null,
+    normalizeLookupValue(payload.budgetText) ? `예산: ${payload.budgetText}` : null,
+    normalizeLookupValue(payload.targetQuarterOrDate)
+      ? `도입 희망 시점: ${payload.targetQuarterOrDate}`
+      : null,
+    normalizeLookupValue(payload.sourceChannel)
+      ? `유입 경로: ${payload.sourceChannel}`
+      : null,
+    normalizeLookupValue(payload.nextAction)
+      ? `다음 액션: ${payload.nextAction}`
+      : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join('\n');
+
+const buildLeadReviewItem = ({
+  kind,
+  decision,
+  target,
+  matchedRecord,
+  reason,
+  fields,
+}: {
+  kind: DraftReviewItem['kind'];
+  decision: DraftReviewItem['decision'];
+  target: string;
+  matchedRecord?: string | null;
+  reason?: string | null;
+  fields: DraftReviewItem['fields'];
+}): DraftReviewItem => ({
+  kind,
+  decision,
+  target,
+  matchedRecord: matchedRecord ?? null,
+  reason: reason ?? null,
+  fields,
+});
+
 const findMatchedRecordLabel = async ({
   action,
   recordId,
@@ -1064,6 +1210,250 @@ export const previewApprovalAction = async (
           : null
         : '기존 레코드를 찾지 못해 승인 시 반영이 건너뛸 수 있습니다.',
       fields: action.operation === 'delete' ? [] : buildReviewFields(action.data ?? {}),
+    },
+  };
+};
+
+export const buildLeadPackageDraft = async (
+  payload: LeadPackagePayload,
+): Promise<LeadPackageDraftResult> => {
+  const companyName = normalizeLookupValue(payload.companyName);
+  const contactName = normalizeLookupValue(payload.contactName);
+  const primaryEmail = normalizeLookupValue(payload.primaryEmail);
+
+  if (!companyName) {
+    throw new Error('companyName is required for lead package drafts');
+  }
+
+  const company = await lookupCompanyByName(companyName);
+  const person =
+    contactName || primaryEmail
+      ? await lookupPersonByReference({
+          email: primaryEmail ?? undefined,
+          fullName: contactName ?? undefined,
+          companyName,
+        })
+      : null;
+  const contactLabel = contactName ?? person?.fullName ?? null;
+  const opportunityName = buildLeadPackageOpportunityName({
+    companyName,
+    solutionName: payload.solutionName,
+    vendorName: payload.vendorName,
+  });
+  const noteTitle = `${companyName} 신규 리드 메모`;
+  const taskTitle = `${companyName} 후속 제안 준비`;
+  const closeDate = parseLeadCloseDate(payload.targetQuarterOrDate);
+  const budgetAmount = parseLeadBudgetAmount(payload);
+  const actions: CrmActionRecord[] = [];
+  const reviewItems: DraftReviewItem[] = [];
+
+  if (!company) {
+    actions.push({
+      kind: 'company',
+      operation: 'create',
+      data: {
+        name: companyName,
+      },
+    });
+    reviewItems.push(
+      buildLeadReviewItem({
+        kind: 'company',
+        decision: 'CREATE',
+        target: companyName,
+        fields: [
+          {
+            key: 'name',
+            value: companyName,
+          },
+        ],
+      }),
+    );
+  } else {
+    reviewItems.push(
+      buildLeadReviewItem({
+        kind: 'company',
+        decision: 'SKIP',
+        target: companyName,
+        matchedRecord: company.name ?? companyName,
+        reason: '기존 회사 레코드를 재사용합니다.',
+        fields: [],
+      }),
+    );
+  }
+
+  if (contactName || primaryEmail) {
+    if (!person) {
+      actions.push({
+        kind: 'person',
+        operation: 'create',
+        data: {
+          ...(contactName ? { name: contactName } : {}),
+          companyName,
+          ...(normalizeLookupValue(payload.jobTitle)
+            ? { jobTitle: payload.jobTitle }
+            : {}),
+          ...(primaryEmail ? { primaryEmail } : {}),
+        },
+      });
+      reviewItems.push(
+        buildLeadReviewItem({
+          kind: 'person',
+          decision: 'CREATE',
+          target: contactName ?? primaryEmail ?? '담당자',
+          fields: buildReviewFields({
+            ...(contactName ? { name: contactName } : {}),
+            ...(normalizeLookupValue(payload.jobTitle)
+              ? { jobTitle: payload.jobTitle }
+              : {}),
+            ...(primaryEmail ? { primaryEmail } : {}),
+          }),
+        }),
+      );
+    } else {
+      reviewItems.push(
+        buildLeadReviewItem({
+          kind: 'person',
+          decision: 'SKIP',
+          target: contactLabel ?? primaryEmail ?? person.fullName,
+          matchedRecord: person.fullName,
+          reason: '기존 담당자 레코드를 재사용합니다.',
+          fields: [],
+        }),
+      );
+    }
+  }
+
+  actions.push({
+    kind: 'opportunity',
+    operation: 'create',
+    data: {
+      name: opportunityName,
+      companyName,
+      ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
+      stage: 'IDENTIFIED',
+      ...(budgetAmount ? { amount: budgetAmount } : {}),
+      ...(closeDate ? { closeDate } : {}),
+    },
+  });
+  reviewItems.push(
+    buildLeadReviewItem({
+      kind: 'opportunity',
+      decision: 'CREATE',
+      target: opportunityName,
+      fields: buildReviewFields({
+        name: opportunityName,
+        stage: 'IDENTIFIED',
+        ...(budgetAmount ? { amount: budgetAmount } : {}),
+        ...(closeDate ? { closeDate } : {}),
+      }),
+    }),
+  );
+
+  actions.push({
+    kind: 'note',
+    operation: 'create',
+    data: {
+      title: noteTitle,
+      body: buildLeadPackageNoteBody(payload),
+      companyName,
+      ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
+      opportunityName,
+    },
+  });
+  reviewItems.push(
+    buildLeadReviewItem({
+      kind: 'note',
+      decision: 'CREATE',
+      target: noteTitle,
+      fields: buildReviewFields({
+        title: noteTitle,
+      }),
+    }),
+  );
+
+  if (normalizeLookupValue(payload.nextAction)) {
+    actions.push({
+      kind: 'task',
+      operation: 'create',
+      data: {
+        title: taskTitle,
+        body: payload.nextAction,
+        companyName,
+        ...(contactLabel ? { pointOfContactName: contactLabel } : {}),
+        opportunityName,
+      },
+    });
+    reviewItems.push(
+      buildLeadReviewItem({
+        kind: 'task',
+        decision: 'CREATE',
+        target: taskTitle,
+        fields: buildReviewFields({
+          title: taskTitle,
+          body: payload.nextAction,
+        }),
+      }),
+    );
+  }
+
+  return {
+    draft: {
+      summary: `${companyName} 신규 리드 등록 초안`,
+      confidence: 0.93,
+      sourceText: payload.sourceText,
+      actions,
+      warnings: [],
+      review: {
+        overview: `${companyName} 신규 리드 패키지 승인 초안`,
+        opinion:
+          '회사와 담당자 중복 여부를 확인한 뒤 승인하세요. 신규 등록은 승인 후에만 실행됩니다.',
+        items: reviewItems,
+      },
+    },
+    plannedRecords: {
+      company: {
+        decision: company ? 'REUSE' : 'CREATE',
+        label: companyName,
+        matchedRecord: company
+          ? {
+              id: company.id,
+              label: company.name ?? companyName,
+            }
+          : null,
+      },
+      ...(contactName || primaryEmail
+        ? {
+            person: {
+              decision: person ? 'REUSE' : 'CREATE',
+              label: contactLabel ?? primaryEmail ?? '담당자',
+              matchedRecord: person
+                ? {
+                    id: person.id,
+                    label: person.fullName,
+                  }
+                : null,
+            },
+          }
+        : {}),
+      opportunity: {
+        decision: 'CREATE',
+        label: opportunityName,
+        matchedRecord: null,
+      },
+      note: {
+        decision: 'CREATE',
+        label: noteTitle,
+        matchedRecord: null,
+      },
+      ...(normalizeLookupValue(payload.nextAction)
+        ? {
+            task: {
+              decision: 'CREATE',
+              label: taskTitle,
+              matchedRecord: null,
+            },
+          }
+        : {}),
     },
   };
 };

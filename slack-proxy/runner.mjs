@@ -179,6 +179,7 @@ export const buildCodexPrompt = ({
     'Policy:',
     '- Query/list/report requests must use at least one search-* tool before a final query answer.',
     '- When the user wants a broad list or report without explicit filters, call the relevant search-* tool with {"query": ""}.',
+    '- Lead registration requests such as "신규 리드 등록", "CRM에 등록", or "잠재고객 등록" must use create-lead-package and finish with mode="write_draft".',
     '- Create requests may execute create-record immediately. After execution, finish with mode="applied".',
     '- Update and delete requests must use update-record or delete-record to capture the exact target, then finish with mode="write_draft" for Slack approval.',
     '- Every successful final response must include threadContextPatch so the same Slack thread can continue the conversation safely.',
@@ -676,6 +677,9 @@ const hasSearchToolHistory = (history) =>
 const hasCreateToolHistory = (history) =>
   hasHistoryToolName(history, 'create-record');
 
+const hasLeadPackageToolHistory = (history) =>
+  hasHistoryToolName(history, 'create-lead-package');
+
 const hasApprovalPreviewHistory = (history) =>
   hasHistoryToolName(history, 'update-record') ||
   hasHistoryToolName(history, 'delete-record');
@@ -702,6 +706,22 @@ const enrichWriteDraftWithApprovalHistory = ({
   requestText,
 }) => {
   const baseDraft = toPlainRecord(draft) ?? {};
+  const leadPackageDraft =
+    collectHistoryResults(history, 'create-lead-package')
+      .map((result) => toPlainRecord(result?.draft))
+      .find(Boolean) ?? null;
+
+  if (leadPackageDraft) {
+    return {
+      ...leadPackageDraft,
+      sourceText:
+        typeof leadPackageDraft.sourceText === 'string' &&
+        leadPackageDraft.sourceText.length > 0
+          ? leadPackageDraft.sourceText
+          : requestText,
+    };
+  }
+
   const previewResults = collectApprovalPreviewResults(history);
   const plannedActions = previewResults
     .map((result) => toPlainRecord(result?.plannedAction))
@@ -713,6 +733,8 @@ const enrichWriteDraftWithApprovalHistory = ({
   const existingWarnings = Array.isArray(baseDraft.warnings)
     ? baseDraft.warnings.filter((warning) => typeof warning === 'string')
     : [];
+  const historyActions = plannedActions;
+  const historyWarnings = [];
 
   return {
     ...baseDraft,
@@ -720,8 +742,8 @@ const enrichWriteDraftWithApprovalHistory = ({
       typeof baseDraft.sourceText === 'string' && baseDraft.sourceText.length > 0
         ? baseDraft.sourceText
         : requestText,
-    actions: existingActions.length > 0 ? existingActions : plannedActions,
-    warnings: existingWarnings,
+    actions: existingActions.length > 0 ? existingActions : historyActions,
+    warnings: existingWarnings.length > 0 ? existingWarnings : historyWarnings,
     review:
       toPlainRecord(baseDraft.review) ??
       (reviewItems.length > 0
@@ -750,6 +772,10 @@ const shouldRejectFinalDecision = ({ decision, history }) => {
     return 'Every successful final response must include threadContextPatch.';
   }
 
+  if (hasLeadPackageToolHistory(history) && decision.mode !== 'write_draft') {
+    return 'create-lead-package is approval-only and must finish with write_draft.';
+  }
+
   if (hasCreateToolHistory(history) && decision.mode !== 'applied') {
     return 'Immediate create mutations already ran, so the final mode must be applied.';
   }
@@ -766,8 +792,12 @@ const shouldRejectFinalDecision = ({ decision, history }) => {
     return 'write_draft final mode is only for approval-gated update/delete flows.';
   }
 
-  if (decision.mode === 'write_draft' && !hasApprovalPreviewHistory(history)) {
-    return 'write_draft final mode requires at least one update-record or delete-record tool result before approval.';
+  if (
+    decision.mode === 'write_draft' &&
+    !hasApprovalPreviewHistory(history) &&
+    !hasLeadPackageToolHistory(history)
+  ) {
+    return 'write_draft final mode requires either an update/delete approval preview or a create-lead-package preview before approval.';
   }
 
   return null;
@@ -869,6 +899,35 @@ const FALLBACK_TOOL_CATALOG = {
           },
         },
         required: ['kind', 'data'],
+      },
+      visibility: 'model_visible',
+    },
+    {
+      name: 'create-lead-package',
+      description:
+        'Build an approval-first lead registration package for company, person, opportunity, note, and optional task.',
+      policy:
+        'Use for 신규 리드 등록 and CRM lead registration requests. This tool is approval-only and must finish with mode="write_draft".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          companyName: {
+            type: 'string',
+          },
+          contactName: {
+            type: 'string',
+          },
+          primaryEmail: {
+            type: 'string',
+          },
+          solutionName: {
+            type: 'string',
+          },
+          sourceText: {
+            type: 'string',
+          },
+        },
+        required: ['companyName', 'sourceText'],
       },
       visibility: 'model_visible',
     },
@@ -1155,6 +1214,18 @@ export const processSlackRequestWithCodex = async ({
     if (decision.kind === 'tool_call') {
       if (!allowedModelToolNames.has(decision.toolName)) {
         throw new Error(`Disallowed Codex tool call: ${decision.toolName}`);
+      }
+
+      if (
+        decision.toolName === 'create-record' &&
+        hasLeadPackageToolHistory(history)
+      ) {
+        history.push({
+          type: 'runner_feedback',
+          message:
+            'create-record cannot run after create-lead-package; finish with write_draft using the lead package draft.',
+        });
+        continue;
       }
 
       const result = await effectiveToolClient.callTool(

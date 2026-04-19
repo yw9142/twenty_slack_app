@@ -2,6 +2,7 @@ import type { RoutePayload } from 'twenty-sdk';
 
 import { getToolSharedSecret } from 'src/utils/env';
 import {
+  buildLeadPackageDraft,
   executeImmediateCreateAction,
   previewApprovalAction,
 } from 'src/utils/crm-write';
@@ -15,6 +16,7 @@ import {
 } from 'src/utils/crm-query';
 import type {
   CrmActionRecord,
+  LeadPackagePayload,
   CrmWriteDraft,
   SlackReply,
   SlackThreadContextPatch,
@@ -163,6 +165,63 @@ const toStringArray = (value: unknown): string[] =>
   Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
+
+const getLeadPackagePayload = (
+  record: Record<string, unknown>,
+): LeadPackagePayload | null => {
+  const companyName = toStringValue(record, 'companyName');
+  const sourceText = toStringValue(record, 'sourceText');
+
+  if (companyName.length === 0 || sourceText.length === 0) {
+    return null;
+  }
+
+  const budgetAmountValue = record.budgetAmount;
+
+  return {
+    companyName,
+    sourceText,
+    ...(toStringValue(record, 'contactName').length > 0
+      ? { contactName: toStringValue(record, 'contactName') }
+      : {}),
+    ...(toStringValue(record, 'jobTitle').length > 0
+      ? { jobTitle: toStringValue(record, 'jobTitle') }
+      : {}),
+    ...(toStringValue(record, 'primaryEmail').length > 0
+      ? { primaryEmail: toStringValue(record, 'primaryEmail') }
+      : {}),
+    ...(toStringValue(record, 'phone').length > 0
+      ? { phone: toStringValue(record, 'phone') }
+      : {}),
+    ...(toStringValue(record, 'vendorName').length > 0
+      ? { vendorName: toStringValue(record, 'vendorName') }
+      : {}),
+    ...(toStringValue(record, 'solutionName').length > 0
+      ? { solutionName: toStringValue(record, 'solutionName') }
+      : {}),
+    ...(toStringValue(record, 'currentSituation').length > 0
+      ? { currentSituation: toStringValue(record, 'currentSituation') }
+      : {}),
+    ...(toStringValue(record, 'expectedScale').length > 0
+      ? { expectedScale: toStringValue(record, 'expectedScale') }
+      : {}),
+    ...(toStringValue(record, 'budgetText').length > 0
+      ? { budgetText: toStringValue(record, 'budgetText') }
+      : {}),
+    ...(typeof budgetAmountValue === 'number'
+      ? { budgetAmount: budgetAmountValue }
+      : {}),
+    ...(toStringValue(record, 'targetQuarterOrDate').length > 0
+      ? { targetQuarterOrDate: toStringValue(record, 'targetQuarterOrDate') }
+      : {}),
+    ...(toStringValue(record, 'sourceChannel').length > 0
+      ? { sourceChannel: toStringValue(record, 'sourceChannel') }
+      : {}),
+    ...(toStringValue(record, 'nextAction').length > 0
+      ? { nextAction: toStringValue(record, 'nextAction') }
+      : {}),
+  };
+};
 
 const toPendingApproval = (value: unknown): SlackThreadPendingApproval | null => {
   const record = toRecordValue(value);
@@ -748,6 +807,30 @@ export const handleCreateRecordRoute = async (
   return {
     ok: true,
     actionResult,
+  };
+};
+
+export const handleCreateLeadPackageRoute = async (
+  event: ToolRoutePayload,
+): Promise<Record<string, unknown>> => {
+  if (!isAuthorized(event)) {
+    return rejectToolRequest();
+  }
+
+  const payload = getLeadPackagePayload(toRecord(event.body));
+
+  if (!payload) {
+    return {
+      ok: false,
+      message: 'companyName and sourceText are required',
+    };
+  }
+
+  const result = await buildLeadPackageDraft(payload);
+
+  return {
+    ok: true,
+    ...result,
   };
 };
 

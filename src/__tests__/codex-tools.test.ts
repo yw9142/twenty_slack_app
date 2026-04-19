@@ -8,6 +8,7 @@ const {
   fetchNotes,
   fetchTasks,
   executeImmediateCreateAction,
+  buildLeadPackageDraft,
   findSlackRequestById,
   updateSlackRequest,
   postSlackReplyForRequest,
@@ -22,6 +23,7 @@ const {
   fetchNotes: vi.fn(),
   fetchTasks: vi.fn(),
   executeImmediateCreateAction: vi.fn(),
+  buildLeadPackageDraft: vi.fn(),
   findSlackRequestById: vi.fn(),
   updateSlackRequest: vi.fn(),
   postSlackReplyForRequest: vi.fn(),
@@ -54,6 +56,7 @@ vi.mock('src/utils/crm-query', () => ({
 
 vi.mock('src/utils/crm-write', () => ({
   executeImmediateCreateAction,
+  buildLeadPackageDraft,
   previewApprovalAction,
 }));
 
@@ -73,6 +76,7 @@ vi.mock('src/utils/slack-thread-context-service', () => ({
 
 import {
   handleCreateRecordRoute,
+  handleCreateLeadPackageRoute,
   handleDeleteRecordRoute,
   handleGetToolCatalogRoute,
   handleLoadSlackRequestRoute,
@@ -131,6 +135,87 @@ describe('codex tools', () => {
       kind: 'company',
       operation: 'create',
       id: 'company-1',
+    });
+    buildLeadPackageDraft.mockResolvedValue({
+      draft: {
+        summary: '서광건설엔지니어링 신규 리드 등록 초안',
+        confidence: 0.93,
+        sourceText: 'CRM에 신규 리드로 등록해줘',
+        warnings: [],
+        actions: [
+          {
+            kind: 'company',
+            operation: 'create',
+            data: {
+              name: '서광건설엔지니어링',
+            },
+          },
+          {
+            kind: 'person',
+            operation: 'create',
+            data: {
+              name: '박성훈',
+              companyName: '서광건설엔지니어링',
+              primaryEmail: 'sh.park@seogwang-demo.co.kr',
+            },
+          },
+          {
+            kind: 'opportunity',
+            operation: 'create',
+            data: {
+              name: '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+              companyName: '서광건설엔지니어링',
+              pointOfContactName: '박성훈',
+              stage: 'IDENTIFIED',
+            },
+          },
+          {
+            kind: 'note',
+            operation: 'create',
+            data: {
+              title: '서광건설엔지니어링 신규 리드 메모',
+              body: '현재 상황',
+              companyName: '서광건설엔지니어링',
+              pointOfContactName: '박성훈',
+              opportunityName:
+                '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+            },
+          },
+          {
+            kind: 'task',
+            operation: 'create',
+            data: {
+              title: '서광건설엔지니어링 후속 제안 준비',
+              body: '라이선스 견적 초안과 BIM 컨설팅 범위안 같이 제안',
+              companyName: '서광건설엔지니어링',
+              pointOfContactName: '박성훈',
+              opportunityName:
+                '서광건설엔지니어링 Autodesk AEC Collection 신규 리드',
+            },
+          },
+        ],
+        review: {
+          overview: '리드 등록 패키지 승인 초안',
+          opinion: '회사와 담당자 중복 여부를 확인한 뒤 승인하세요.',
+          items: [
+            {
+              kind: 'company',
+              decision: 'CREATE',
+              target: '서광건설엔지니어링',
+              matchedRecord: null,
+              reason: null,
+              fields: [{ key: 'name', value: '서광건설엔지니어링' }],
+            },
+          ],
+        },
+      },
+      plannedRecords: {
+        company: {
+          decision: 'CREATE',
+          label: '서광건설엔지니어링',
+          matchedRecord: null,
+        },
+      },
     });
     previewApprovalAction.mockResolvedValue({
       action: {
@@ -223,6 +308,7 @@ describe('codex tools', () => {
     expect(toolCatalog.modelVisibleTools).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'create-record' }),
+        expect.objectContaining({ name: 'create-lead-package' }),
         expect.objectContaining({ name: 'update-record' }),
         expect.objectContaining({ name: 'delete-record' }),
       ]),
@@ -403,6 +489,51 @@ describe('codex tools', () => {
         kind: 'company',
         operation: 'create',
       },
+    });
+  });
+
+  it('builds approval-first lead package drafts without mutating immediately', async () => {
+    const result = await handleCreateLeadPackageRoute({
+      body: {
+        companyName: '서광건설엔지니어링',
+        contactName: '박성훈',
+        primaryEmail: 'sh.park@seogwang-demo.co.kr',
+        solutionName: 'Autodesk AEC Collection',
+        sourceText: 'CRM에 신규 리드로 등록해줘',
+      },
+      headers: {
+        'content-type': 'application/json',
+        'x-tool-shared-secret': 'tool-secret',
+      },
+    } as never);
+
+    expect(buildLeadPackageDraft).toHaveBeenCalledWith({
+      companyName: '서광건설엔지니어링',
+      contactName: '박성훈',
+      primaryEmail: 'sh.park@seogwang-demo.co.kr',
+      solutionName: 'Autodesk AEC Collection',
+      sourceText: 'CRM에 신규 리드로 등록해줘',
+    });
+    expect(executeImmediateCreateAction).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      draft: expect.objectContaining({
+        summary: '서광건설엔지니어링 신규 리드 등록 초안',
+        actions: expect.arrayContaining([
+          expect.objectContaining({ kind: 'company', operation: 'create' }),
+          expect.objectContaining({ kind: 'person', operation: 'create' }),
+          expect.objectContaining({
+            kind: 'opportunity',
+            operation: 'create',
+          }),
+        ]),
+      }),
+      plannedRecords: expect.objectContaining({
+        company: expect.objectContaining({
+          decision: 'CREATE',
+          label: '서광건설엔지니어링',
+        }),
+      }),
     });
   });
 
