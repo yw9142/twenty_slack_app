@@ -1,8 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { processSlackRequestWithCodex } from '../../slack-proxy/runner.mjs';
+import {
+  parseDecisionJson,
+  processSlackRequestWithCodex,
+} from '../../slack-proxy/runner.mjs';
 
 describe('codex runner failure modes', () => {
+  it('parses the first complete JSON decision when Codex appends trailing text', () => {
+    expect(
+      parseDecisionJson(
+        [
+          '```json',
+          JSON.stringify({
+            kind: 'tool_call',
+            toolName: 'search-companies',
+            input: { query: '다우데이타' },
+          }),
+          '```',
+          '추가 설명입니다.',
+        ].join('\n'),
+      ),
+    ).toEqual({
+      kind: 'tool_call',
+      toolName: 'search-companies',
+      input: { query: '다우데이타' },
+    });
+  });
+
   it('fails when Codex exceeds the maximum number of tool steps', async () => {
     const toolClient = {
       callTool: vi.fn(async (endpoint: string) => {

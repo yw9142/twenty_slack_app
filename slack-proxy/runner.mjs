@@ -33,14 +33,87 @@ const stripCodeFence = (value) => {
     .trim();
 };
 
-const parseDecisionJson = (value) => {
+export const parseDecisionJson = (value) => {
   if (typeof value !== 'string') {
     return value;
   }
 
   const rawValue = stripCodeFence(value);
 
-  return JSON.parse(rawValue);
+  try {
+    return JSON.parse(rawValue);
+  } catch (error) {
+    const firstJsonValue = extractFirstJsonValue(rawValue);
+
+    if (!firstJsonValue) {
+      throw error;
+    }
+
+    return JSON.parse(firstJsonValue);
+  }
+};
+
+const extractFirstJsonValue = (value) => {
+  const startIndex = value.search(/[\[{]/);
+
+  if (startIndex < 0) {
+    return null;
+  }
+
+  const expectedClosings = [];
+  let isInsideString = false;
+  let isEscaped = false;
+
+  for (let index = startIndex; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (isInsideString) {
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+
+      if (character === '\\') {
+        isEscaped = true;
+        continue;
+      }
+
+      if (character === '"') {
+        isInsideString = false;
+      }
+
+      continue;
+    }
+
+    if (character === '"') {
+      isInsideString = true;
+      continue;
+    }
+
+    if (character === '{') {
+      expectedClosings.push('}');
+      continue;
+    }
+
+    if (character === '[') {
+      expectedClosings.push(']');
+      continue;
+    }
+
+    if (character !== '}' && character !== ']') {
+      continue;
+    }
+
+    if (expectedClosings.pop() !== character) {
+      return null;
+    }
+
+    if (expectedClosings.length === 0) {
+      return value.slice(startIndex, index + 1);
+    }
+  }
+
+  return null;
 };
 
 const summarizeUnsupportedDecision = (decision) => {
