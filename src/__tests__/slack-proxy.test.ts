@@ -382,7 +382,9 @@ describe('slack proxy runner', () => {
         'post-slack-reply',
         {
           slackRequestId: 'request-1',
-          text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+          reply: {
+            text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+          },
         },
       ],
     ]);
@@ -474,7 +476,9 @@ describe('slack proxy runner', () => {
         'post-slack-reply',
         {
           slackRequestId: 'request-1',
-          text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+          reply: {
+            text: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+          },
         },
       ],
     ]);
@@ -502,13 +506,108 @@ describe('slack proxy runner', () => {
     );
     expect(firstCall.prompt).toContain('Response style:');
     expect(firstCall.prompt).toContain(
-      '- For analytical, strategy, briefing, summary, or recommendation requests, use short markdown sections and flat bullet lists.',
+      '- For analytical, strategy, briefing, summary, or recommendation requests, use a polished Twenty in-app chat style',
+    );
+    expect(firstCall.prompt).toContain(
+      '- Prefer reply.blocks for substantive answers.',
+    );
+    expect(firstCall.prompt).toContain(
+      'Do not use GitHub pipe tables or # markdown headings',
+    );
+    expect(firstCall.prompt).toContain(
+      'search opportunities, licenses, and activities',
+    );
+    expect(firstCall.prompt).toContain('"reply"');
+    expect(firstCall.prompt).toContain('"blocks"');
+    expect(firstCall.prompt).toContain(
+      '- Let the user request and tool results determine the structure, priority logic, and section names.',
     );
 
     expect(result).toEqual({
       kind: 'query',
       slackRequestId: 'request-1',
       answer: '미래금융 영업기회는 NEGOTIATION 단계입니다.',
+    });
+  });
+
+  it('posts report-shaped query finals as Slack blocks instead of one dense text blob', async () => {
+    const toolCalls: Array<[string, Record<string, unknown>]> = [];
+    const reportMessage = [
+      '오늘은 대명플랜트서비스 AVEVA를 먼저 봐야 합니다.',
+      '',
+      '**요약**',
+      '- 2026-04-25 마감입니다.',
+      '- 9,600만원 NEGOTIATION 건입니다.',
+      '',
+      '**오늘 할 일**',
+      '- 구매 승인 장애물을 확인하세요.',
+    ].join('\n');
+
+    const result = await processSlackRequestWithCodex({
+      slackRequestId: 'request-1',
+      toolClient: buildToolClient(toolCalls),
+      runCodexDecision: vi
+        .fn()
+        .mockResolvedValueOnce({
+          kind: 'tool_call',
+          endpoint: 'search-opportunities',
+          payload: {
+            query: '대명플랜트서비스 AVEVA',
+          },
+        })
+        .mockResolvedValueOnce({
+          kind: 'final',
+          mode: 'query',
+          message: reportMessage,
+          threadContextPatch: {
+            assistantTurn: {
+              text: '오늘은 대명플랜트서비스 AVEVA를 먼저 봐야 합니다.',
+              outcome: 'query',
+            },
+            summary: '대명플랜트서비스 AVEVA 우선 처리 가이드를 답변했다.',
+            selectedEntities: {
+              opportunityIds: ['opportunity-1'],
+            },
+            lastQuerySnapshot: {
+              requestId: 'request-1',
+              items: [
+                {
+                  id: 'opportunity-1',
+                  kind: 'opportunity',
+                  label: '대명플랜트서비스 AVEVA',
+                  order: 0,
+                },
+              ],
+            },
+            pendingApproval: null,
+          },
+        }),
+    });
+
+    const saveCall = toolCalls.find(
+      ([endpoint]) => endpoint === 'save-query-answer',
+    );
+    const postCall = toolCalls.find(
+      ([endpoint]) => endpoint === 'post-slack-reply',
+    );
+    const savedReply = saveCall?.[1].reply as
+      | { text: string; blocks?: Array<Record<string, unknown>> }
+      | undefined;
+    const postedReply = postCall?.[1].reply as
+      | { text: string; blocks?: Array<Record<string, unknown>> }
+      | undefined;
+
+    expect(savedReply?.text).toBe(
+      '오늘은 대명플랜트서비스 AVEVA를 먼저 봐야 합니다.',
+    );
+    expect(savedReply?.blocks?.length).toBeGreaterThan(1);
+    expect(JSON.stringify(savedReply?.blocks ?? [])).toContain('*요약*');
+    expect(JSON.stringify(savedReply?.blocks ?? [])).not.toContain('**요약**');
+    expect(postedReply).toEqual(savedReply);
+    expect(result).toEqual({
+      kind: 'query',
+      slackRequestId: 'request-1',
+      answer: '오늘은 대명플랜트서비스 AVEVA를 먼저 봐야 합니다.',
     });
   });
 
@@ -1672,7 +1771,9 @@ describe('slack proxy runner', () => {
         'post-slack-reply',
         {
           slackRequestId: 'request-create-company',
-          text: '미래금융 회사를 생성했습니다.',
+          reply: {
+            text: '미래금융 회사를 생성했습니다.',
+          },
         },
       ],
     ]);
@@ -1853,7 +1954,9 @@ describe('slack proxy runner', () => {
         'post-slack-reply',
         {
           slackRequestId: 'request-create-guard',
-          text: '미래금융 회사를 생성했습니다.',
+          reply: {
+            text: '미래금융 회사를 생성했습니다.',
+          },
         },
       ],
     ]);

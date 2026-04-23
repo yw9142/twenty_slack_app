@@ -138,14 +138,9 @@ type AnthropicInvocationResult<TValue extends Record<string, unknown>> = {
   diagnostics: AnthropicInvocationDiagnostics;
 };
 
-type CrmReplySection = {
-  title: string;
-  body: string;
-};
-
 type SynthesizedCrmReply = {
   text: string;
-  sections: CrmReplySection[];
+  markdown: string;
 };
 
 type StructuredCrmWriteDraft = CrmWriteDraft;
@@ -246,20 +241,9 @@ const crmReplySchema = {
   type: 'object',
   properties: {
     text: { type: 'string' },
-    sections: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          body: { type: 'string' },
-        },
-        required: ['title', 'body'],
-        additionalProperties: false,
-      },
-    },
+    markdown: { type: 'string' },
   },
-  required: ['text', 'sections'],
+  required: ['text', 'markdown'],
   additionalProperties: false,
 } as const satisfies JsonSchema;
 
@@ -2124,24 +2108,6 @@ const callAnthropicToolInputWithDiagnostics = async <
   };
 };
 
-const callAnthropicToolInput = async <TInput extends Record<string, unknown>>(
-  args: {
-    operation: string;
-    systemPrompt: string;
-    userPrompt: string;
-    toolName: string;
-    toolDescription: string;
-    inputSchema: JsonSchema;
-    maxTokens?: number;
-    effort?: 'low' | 'medium' | 'high';
-    enableThinking?: boolean;
-  },
-): Promise<TInput | null> => {
-  const result = await callAnthropicToolInputWithDiagnostics<TInput>(args);
-
-  return result.data;
-};
-
 export const classifySlackTextWithDiagnostics = async (
   text: string,
 ): Promise<{
@@ -2321,86 +2287,100 @@ export const planDynamicObjectQuery = async ({
   return result.plan;
 };
 
-const buildSlackReplyFromSections = (
-  response: SynthesizedCrmReply,
-): SlackReply => {
-  const splitSlackBody = (body: string, maxLength = 2800): string[] => {
-    if (body.length <= maxLength) {
-      return [body];
+const splitSlackMarkdown = (body: string, maxLength = 2800): string[] => {
+  if (body.length <= maxLength) {
+    return [body];
+  }
+
+  const chunks: string[] = [];
+  const pushHardChunks = (value: string) => {
+    for (let index = 0; index < value.length; index += maxLength) {
+      chunks.push(value.slice(index, index + maxLength));
+    }
+  };
+  const pushChunk = (value: string) => {
+    if (value.length === 0) {
+      return;
     }
 
-    const paragraphs = body.split('\n\n');
-    const chunks: string[] = [];
-    let current = '';
+    if (value.length <= maxLength) {
+      chunks.push(value);
+      return;
+    }
 
-    for (const paragraph of paragraphs) {
-      const candidate = current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+    const lines = value.split('\n');
+    let currentLineChunk = '';
+
+    for (const line of lines) {
+      const candidate =
+        currentLineChunk.length === 0 ? line : `${currentLineChunk}\n${line}`;
 
       if (candidate.length <= maxLength) {
-        current = candidate;
+        currentLineChunk = candidate;
         continue;
       }
 
-      if (current.length > 0) {
-        chunks.push(current);
-        current = '';
+      if (currentLineChunk.length > 0) {
+        chunks.push(currentLineChunk);
       }
 
-      if (paragraph.length <= maxLength) {
-        current = paragraph;
-        continue;
+      if (line.length > maxLength) {
+        pushHardChunks(line);
+        currentLineChunk = '';
+      } else {
+        currentLineChunk = line;
       }
-
-      const lines = paragraph.split('\n');
-      let lineChunk = '';
-
-      for (const line of lines) {
-        const lineCandidate =
-          lineChunk.length === 0 ? line : `${lineChunk}\n${line}`;
-
-        if (lineCandidate.length <= maxLength) {
-          lineChunk = lineCandidate;
-          continue;
-        }
-
-        if (lineChunk.length > 0) {
-          chunks.push(lineChunk);
-        }
-
-        lineChunk = line;
-      }
-
-      current = lineChunk;
     }
 
-    if (current.length > 0) {
-      chunks.push(current);
+    if (currentLineChunk.length > 0) {
+      chunks.push(currentLineChunk);
     }
-
-    return chunks;
   };
 
+  const paragraphs = body.split('\n\n');
+  let current = '';
+
+  for (const paragraph of paragraphs) {
+    const candidate =
+      current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    pushChunk(current);
+    current = paragraph;
+  }
+
+  pushChunk(current);
+
+  return chunks;
+};
+
+const buildSlackReplyFromMarkdown = (
+  response: SynthesizedCrmReply,
+): SlackReply => {
+  const markdown =
+    typeof response.markdown === 'string'
+      ? cleanSlackText(response.markdown).trim()
+      : '';
+
   return {
-    text: cleanSlackText(response.text, { singleLine: true }),
-    blocks: response.sections
-      .filter(
-        (section) =>
-          typeof section.title === 'string' &&
-          section.title.trim().length > 0 &&
-          typeof section.body === 'string' &&
-          section.body.trim().length > 0,
-      )
-      .flatMap((section) =>
-        splitSlackBody(cleanSlackText(section.body)).map((bodyChunk, index) => ({
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text:
-              `*${cleanSlackText(section.title, { singleLine: true })}${index === 0 ? '' : ' (계속)'}*\n` +
-              bodyChunk,
-          },
-        })),
-      ),
+    text:
+      typeof response.text === 'string'
+        ? cleanSlackText(response.text, { singleLine: true })
+        : '',
+    blocks:
+      markdown.length > 0
+        ? splitSlackMarkdown(markdown).map((bodyChunk, index) => ({
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: index === 0 ? bodyChunk : `*(계속)*\n${bodyChunk}`,
+            },
+          }))
+        : undefined,
   };
 };
 
@@ -2433,7 +2413,7 @@ export const synthesizeCrmQueryReplyWithDiagnostics = async ({
     });
 
   return {
-    reply: response.data ? buildSlackReplyFromSections(response.data) : null,
+    reply: response.data ? buildSlackReplyFromMarkdown(response.data) : null,
     aiDiagnostics: response.diagnostics,
   };
 };

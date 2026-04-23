@@ -71,7 +71,6 @@ export type DynamicObjectQueryProgressStage =
   | 'DYNAMIC_RECORDS_READY'
   | 'DYNAMIC_REPORT_BUILT'
   | 'DYNAMIC_SYNTHESIS_STARTED'
-  | 'DYNAMIC_SYNTHESIS_SKIPPED'
   | 'DYNAMIC_SYNTHESIS_COMPLETED';
 
 const MIN_OBJECT_SCORE = 8;
@@ -80,8 +79,10 @@ const ROOT_FIELD_LIMIT = 12;
 const NESTED_FIELD_LIMIT = 4;
 const SUMMARY_RECORD_LIMIT = 8;
 const DETAIL_RECORD_LIMIT = 20;
+const SYNTHESIS_FIELD_LIMIT = 8;
 const MAX_RELATION_SELECTION_DEPTH = 1;
 const GRAPHQL_QUERY_TIMEOUT_MS = 10_000;
+const DEFAULT_SYNTHESIS_TIME_ZONE = 'Asia/Seoul';
 const HIDDEN_DYNAMIC_FIELD_NAMES = new Set([
   'id',
   'createdAt',
@@ -1631,25 +1632,21 @@ const buildFallbackDynamicReply = ({
 const buildSynthesisContextRecords = (
   records: FlattenedDynamicRecord[],
 ): Array<Record<string, unknown>> =>
-  records.slice(0, 5).map((record) => ({
-    title: record.title,
-    priorityScore: record.priorityScore,
-    priorityReasons: record.priorityReasons,
-    fields: Object.fromEntries(Object.entries(record.fields).slice(0, 4)),
-  }));
+  records.slice(0, DETAIL_RECORD_LIMIT).map((record) => {
+    const meaningfulFields = Object.fromEntries(
+      Object.entries(record.fields)
+        .filter(([, value]) => value !== null && String(value).trim().length > 0)
+        .slice(0, SYNTHESIS_FIELD_LIMIT),
+    );
 
-const shouldSkipDynamicSynthesis = ({
-  classification,
-  reportMode,
-  records,
-}: {
-  classification: SlackIntentClassification;
-  reportMode: DynamicObjectQueryPlan['reportMode'];
-  records: FlattenedDynamicRecord[];
-}): boolean =>
-  classification.detailLevel === 'DETAILED' ||
-  reportMode === 'PRIORITY_REPORT' ||
-  records.length > SUMMARY_RECORD_LIMIT;
+    return {
+      id: record.id,
+      title: record.title,
+      priorityScore: record.priorityScore,
+      priorityReasons: record.priorityReasons,
+      fields: meaningfulFields,
+    };
+  });
 
 const isDynamicReplySufficient = ({
   reply,
@@ -1860,51 +1857,6 @@ const buildDynamicQueryReply = async ({
     totalCount: rawRecords.length,
   });
   await onProgress?.('DYNAMIC_REPORT_BUILT');
-  const skipSynthesis = shouldSkipDynamicSynthesis({
-    classification,
-    reportMode,
-    records: reportRecords,
-  });
-
-  if (skipSynthesis) {
-    await onProgress?.('DYNAMIC_SYNTHESIS_SKIPPED');
-
-    return {
-      handled: true,
-      reply: fallbackReply,
-      resultJson: {
-        handled: true,
-        selectedObject: toCatalogItem(selectedDefinition),
-        selectedRootField: rootFieldName,
-        plan,
-        aiDiagnostics: {
-          objectPlanning: planned.aiDiagnostics,
-          querySynthesis: {
-            provider: 'anthropic',
-            operation: 'query_synthesis',
-            attempted: false,
-            succeeded: false,
-            model: null,
-            status: null,
-            reason: 'skipped',
-            errorMessage:
-              'Detailed dynamic report used deterministic renderer to avoid oversized synthesis calls',
-            cache: {
-              enabled: true,
-              type: 'ephemeral',
-              ttl: '5m',
-            },
-            usage: null,
-          } satisfies AnthropicInvocationDiagnostics,
-        },
-        replySource: 'fallback',
-        count: rawRecords.length,
-        fieldCount: selectedDefinition.fields.length,
-        selection,
-        records: reportRecords,
-      },
-    };
-  }
 
   await onProgress?.('DYNAMIC_SYNTHESIS_STARTED');
   const synthesized = await synthesizeCrmQueryReplyWithDiagnostics({
@@ -1916,7 +1868,10 @@ const buildDynamicQueryReply = async ({
       plan,
       records: buildSynthesisContextRecords(reportRecords),
       count: rawRecords.length,
+      reportMode,
       fieldCount: selectedDefinition.fields.length,
+      generatedAt: new Date().toISOString(),
+      timezone: process.env.TZ ?? DEFAULT_SYNTHESIS_TIME_ZONE,
     },
   });
   await onProgress?.('DYNAMIC_SYNTHESIS_COMPLETED');

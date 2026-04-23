@@ -232,16 +232,8 @@ describe('intelligence fallbacks', () => {
             type: 'text',
             text: JSON.stringify({
               text: '이번달 신규 영업기회 2건을 상세 정리했습니다.',
-              sections: [
-                {
-                  title: '신규 영업기회 상세',
-                  body: '1. A은행 Nutanix 전환 / 담당자 김민수 / 단계 DISCOVERY_POC',
-                },
-                {
-                  title: '의견',
-                  body: 'POC 일정과 견적 전환 조건을 먼저 확인하는 것이 좋습니다.',
-                },
-              ],
+              markdown:
+                '# 신규 영업기회 상세\n\n1. A은행 Nutanix 전환 / 담당자 김민수 / 단계 DISCOVERY_POC\n\n## 다음 액션\nPOC 일정과 견적 전환 조건을 먼저 확인하는 것이 좋습니다.',
             }),
           },
         ],
@@ -286,7 +278,10 @@ describe('intelligence fallbacks', () => {
     });
 
     expect(reply?.text).toContain('상세 정리');
-    expect(reply?.blocks).toHaveLength(2);
+    expect(reply?.blocks).toHaveLength(1);
+    expect(JSON.stringify(reply?.blocks ?? [])).toContain(
+      '# 신규 영업기회 상세',
+    );
 
     const request = fetchMock.mock.calls[0]?.[1];
     const body =
@@ -295,6 +290,13 @@ describe('intelligence fallbacks', () => {
         : null;
 
     expect(body?.output_config?.format?.type).toBe('json_schema');
+    expect(body?.output_config?.format?.schema).toMatchObject({
+      required: ['text', 'markdown'],
+      properties: {
+        text: { type: 'string' },
+        markdown: { type: 'string' },
+      },
+    });
     expect(body?.cache_control).toMatchObject({
       type: 'ephemeral',
       ttl: '5m',
@@ -305,6 +307,61 @@ describe('intelligence fallbacks', () => {
     expect(body?.system).toContain('## Base Instructions');
     expect(body?.system).toContain('## Slack Reply Contract');
     expect(body?.system).toContain('## Optional Web Search');
+    expect(body?.system).not.toContain('Always finish with a short 의견 section');
+    expect(body?.system).not.toContain('rank licenses by urgency');
+  });
+
+  it('should split long synthesized markdown into Slack blocks', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const longMarkdown = `# 상세 보고서\n\n${'가'.repeat(2900)}`;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              text: '상세 보고서를 정리했습니다.',
+              markdown: longMarkdown,
+            }),
+          },
+        ],
+      }),
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const reply = await synthesizeCrmQueryReply({
+      requestText: '상세 보고서 작성해줘',
+      classification: {
+        intentType: 'QUERY',
+        confidence: 0.9,
+        summary: '상세 보고서',
+        queryCategory: 'GENERAL',
+        detailLevel: 'DETAILED',
+        timeframe: 'ALL_TIME',
+        focusEntity: 'GENERAL',
+        entityHints: {
+          companies: [],
+          people: [],
+          opportunities: [],
+          solutions: [],
+        },
+      },
+      crmContext: {
+        records: [{ name: '테스트' }],
+      },
+    });
+
+    expect(reply?.blocks?.length).toBeGreaterThan(1);
+    expect(
+      reply?.blocks?.every((block) => {
+        const text = (block.text as { text?: string } | undefined)?.text ?? '';
+
+        return text.length <= 2808;
+      }),
+    ).toBe(true);
   });
 
   it('should compact crm context before sending it to Anthropic synthesis', async () => {
@@ -318,7 +375,7 @@ describe('intelligence fallbacks', () => {
             type: 'text',
             text: JSON.stringify({
               text: '정리했습니다.',
-              sections: [{ title: '의견', body: '다음 액션을 확인하세요.' }],
+              markdown: '다음 액션을 확인하세요.',
             }),
           },
         ],

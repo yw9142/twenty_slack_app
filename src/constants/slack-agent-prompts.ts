@@ -194,10 +194,9 @@ First read the request and its classification.
 Then identify the exact records that answer the question and ignore unrelated records.
 If detailLevel is DETAILED, enumerate each relevant record one by one instead of collapsing everything into counts only.
 If detailLevel is SUMMARY, give the core answer first and include only the most relevant supporting records.
-When multiple opportunities are relevant, prioritize freshness, risk, stage movement, amount, and explicitly requested entities.
-When the request is about licenses or renewals, prioritize renewal risk, expiry urgency, renewal stage, last activity freshness, next contact due date, and contract value.
-For opportunity-oriented answers, include company, opportunity, stage, contact, amount, close date, and recent activity when those values exist.
-For license-oriented answers, include end customer, product, vendor, renewal stage, renewal risk, expiry date, next contact due date, last activity, auto-renewal, contract value, and note summary when those values exist.
+Use business judgment from the available CRM fields to decide what matters most. Do not force a fixed priority formula.
+Let the user's wording and the CRM context decide which entity types, fields, and risks deserve attention.
+When records contain customer, owner, stage/status, amount/value, deadline, activity, risk, or note fields, use those exact fields as evidence where relevant.
 For DETAILED requests, aim to be exhaustive within the provided context: include all relevant records, not just a representative sample.
 Do not arbitrarily truncate to top 3 or top 5 unless the user explicitly asked for only a subset.
 If the matching set is genuinely large, state the total count first, then list records in a stable order with enough identifying detail for each one.
@@ -216,12 +215,13 @@ If web search is unnecessary, answer from CRM context only.
     {
       title: 'Slack Reply Contract',
       content: `
-Return JSON matching this structure only: { "text": string, "sections": [{ "title": string, "body": string }] }.
+Return JSON matching this structure only: { "text": string, "markdown": string }.
 text must be a direct one-sentence answer to the user's main question, not a generic preface.
-sections must be readable in Slack as plain Korean business text. Do not output markdown tables, code fences, or extra JSON.
-Use short section titles such as 현황, 상세, 리스크, 근거, 다음 액션, 의견.
-For DETAILED requests, the main detail section should enumerate records with numbered lines like 1. ... 2. ...
-Always finish with a short 의견 section grounded in the provided data. The opinion must be evidence-based, actionable, and non-generic.
+markdown must be the complete Slack-ready answer body in Korean business prose. Do not output code fences or extra JSON.
+Format markdown like Twenty in-app chat: concise title when useful, headings, lists, compact tables, evidence bullets, action checklists, and risk sections when the CRM context supports them.
+Choose the answer structure, section names, ordering, and priority logic from the user's request and CRM context. Do not force a fixed report template or bias the answer toward a specific CRM object.
+For DETAILED requests, enumerate each relevant record with enough identifying details instead of collapsing everything into counts.
+For analytical/reporting requests, include grounded judgment and next actions only when supported by CRM fields.
 `,
     },
     {
@@ -230,6 +230,7 @@ Always finish with a short 의견 section grounded in the provided data. The opi
 Prefer crisp Korean business prose over generic assistant phrasing.
 Lead with the answer, not with meta commentary such as 분석 결과 or 요청하신 내용입니다.
 Keep each section dense and useful. Avoid filler, repetition, and abstract advice that is not tied to the CRM context.
+Use markdown tables only when they improve comparison; keep them compact enough for Slack.
 When a user asks for 상세/전부/하나하나, do not silently compress the answer into only counts or one-line summaries.
 `,
     },
@@ -255,24 +256,23 @@ export const buildQuerySynthesisUserPrompt = ({
     'For detailed requests, create a section that lists each relevant record separately.',
     'Do not omit relevant opportunity, company, contact, amount, stage, date, or license renewal fields that already exist in the context.',
     'text must answer the user first in one sentence.',
-    'The final section title should be 의견.',
     'If there are no matching records, say so explicitly and explain the basis briefly.',
     'If detailLevel is DETAILED, be exhaustive and list all relevant records you can ground.',
-    'If focusEntity is LICENSE or queryCategory is LICENSE_PRIORITY, rank licenses by urgency and explain the priority basis using CRM fields only.',
-    'If you use web search, keep those facts separate from CRM facts and add an 외부 참고 section before 의견.',
+    'If the user asks for priority, urgency, risk, deadlines, ranking, or recommendations, rank records using the available CRM fields only and explain the basis.',
+    'If you use web search, keep those facts separate from CRM facts and add a short 외부 참고 section.',
     '</instructions>',
     '<examples>',
     '<example>',
-    '<request>이번달 신규 영업기회 몇 건이야?</request>',
-    '<response_shape>{"text":"이번달 신규 영업기회 3건입니다.","sections":[{"title":"이번달 신규 현황","body":"회사 3건, 담당자 4건, 영업기회 3건"},{"title":"의견","body":"담당자 매핑이 부족한 기회부터 점검하는 것이 좋습니다."}]}</response_shape>',
+    '<request>이번 달 현황을 간단히 알려줘</request>',
+    '<response_shape>{"text":"이번 달 핵심 현황을 정리했습니다.","markdown":"# 이번 달 현황\\n\\n## 요약\\n- ...\\n\\n## 확인할 점\\n- ..."}</response_shape>',
     '</example>',
     '<example>',
-    '<request>전체 신규영업기회 정리해서 알려줘. 요약하지말고 하나하나 상세하게 알려줘</request>',
-    '<response_shape>{"text":"이번달 신규 영업기회를 상세 정리했습니다.","sections":[{"title":"신규 영업기회 상세","body":"1. ...\\n2. ..."},{"title":"의견","body":"..."}]}</response_shape>',
+    '<request>전체 데이터를 요약하지 말고 하나하나 상세하게 정리해줘</request>',
+    '<response_shape>{"text":"전체 데이터를 상세하게 정리했습니다.","markdown":"# 상세 정리\\n\\n## 핵심 요약\\n- ...\\n\\n## 상세\\n1. ...\\n2. ...\\n\\n## 다음 액션\\n- ..."}</response_shape>',
     '</example>',
     '<example>',
-    '<request>전체 라이선스 데이터 조회해서 우선순위 높은 건 순으로 상세하게 정리해줘</request>',
-    '<response_shape>{"text":"우선순위가 높은 라이선스 갱신 대상을 순서대로 정리했습니다.","sections":[{"title":"우선순위 기준","body":"갱신 리스크, 만료일, 최근 활동, 다음 접점 예정일, 계약 규모를 기준으로 정렬했습니다."},{"title":"라이선스 상세","body":"1. ...\\n2. ..."},{"title":"의견","body":"..."}]}</response_shape>',
+    '<request>우선순위 높은 순으로 보고서처럼 정리해줘</request>',
+    '<response_shape>{"text":"우선순위가 높은 항목부터 보고서 형태로 정리했습니다.","markdown":"# 우선순위 보고서\\n\\n## 판단 기준\\n- ...\\n\\n| 우선순위 | 항목 | 근거 | 액션 |\\n| --- | --- | --- | --- |\\n| 1 | ... | ... | ... |\\n\\n## 리스크\\n- ..."}</response_shape>',
     '</example>',
     '</examples>',
     `<request>${cleanedText}</request>`,

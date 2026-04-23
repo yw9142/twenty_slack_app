@@ -19,6 +19,11 @@ const INTERNAL_ONLY_TOOL_NAMES = [
   'mark-runner-error',
   'post-slack-reply',
 ];
+const SLACK_SECTION_TEXT_LIMIT = 2900;
+const SLACK_FIELD_TEXT_LIMIT = 1900;
+const SLACK_HEADER_TEXT_LIMIT = 150;
+const SLACK_CONTEXT_TEXT_LIMIT = 2000;
+const SLACK_MAX_BLOCKS = 40;
 
 const stripCodeFence = (value) => {
   const trimmed = value.trim();
@@ -130,6 +135,306 @@ const summarizeUnsupportedDecision = (decision) => {
   return `object(keys=${keys.join(',')})`;
 };
 
+const toSlackText = (value, { singleLine = false } = {}) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const normalized = value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+
+  return singleLine ? normalized.replace(/\s+/g, ' ').trim() : normalized;
+};
+
+const truncateSlackText = (value, maxLength) => {
+  const text = toSlackText(value);
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+};
+
+const normalizeSlackMrkdwn = (value) =>
+  toSlackText(value)
+    .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+    .replace(/^\*\*([^*\n]+)\*\*\s*$/gm, '*$1*')
+    .replace(/\*\*([^*\n]+)\*\*/g, '*$1*')
+    .trim();
+
+const splitSlackText = (value, maxLength = SLACK_SECTION_TEXT_LIMIT) => {
+  const text = normalizeSlackMrkdwn(value);
+
+  if (text.length === 0) {
+    return [];
+  }
+
+  const chunks = [];
+  const pushChunk = (chunk) => {
+    const normalized = chunk.trim();
+
+    if (normalized.length === 0) {
+      return;
+    }
+
+    if (normalized.length <= maxLength) {
+      chunks.push(normalized);
+      return;
+    }
+
+    const lines = normalized.split('\n');
+    let current = '';
+
+    for (const line of lines) {
+      const candidate = current.length === 0 ? line : `${current}\n${line}`;
+
+      if (candidate.length <= maxLength) {
+        current = candidate;
+        continue;
+      }
+
+      if (current.trim().length > 0) {
+        chunks.push(current.trim());
+      }
+
+      if (line.length <= maxLength) {
+        current = line;
+        continue;
+      }
+
+      for (let index = 0; index < line.length; index += maxLength) {
+        chunks.push(line.slice(index, index + maxLength).trim());
+      }
+
+      current = '';
+    }
+
+    if (current.trim().length > 0) {
+      chunks.push(current.trim());
+    }
+  };
+
+  const paragraphs = text.split(/\n{2,}/);
+  let current = '';
+
+  for (const paragraph of paragraphs) {
+    const candidate =
+      current.length === 0 ? paragraph : `${current}\n\n${paragraph}`;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    pushChunk(current);
+    current = paragraph;
+  }
+
+  pushChunk(current);
+
+  return chunks;
+};
+
+const isReportLikeMessage = (message) =>
+  message.includes('\n') ||
+  /(^|\n)\s*(#{1,6}\s+|\*\*[^*\n]+\*\*)/.test(message) ||
+  /(^|\n)\s*[-•]\s+/.test(message);
+
+const splitReportSections = (message) => {
+  const text = normalizeSlackMrkdwn(message);
+  const lines = text.split('\n');
+  const sections = [];
+  let current = [];
+
+  for (const line of lines) {
+    const isHeading = /^\*[^*\n]{1,80}\*\s*$/.test(line.trim());
+
+    if (isHeading && current.some((item) => item.trim().length > 0)) {
+      sections.push(current.join('\n').trim());
+      current = [line];
+      continue;
+    }
+
+    current.push(line);
+  }
+
+  if (current.some((item) => item.trim().length > 0)) {
+    sections.push(current.join('\n').trim());
+  }
+
+  return sections.length > 0 ? sections : [text];
+};
+
+const buildSlackBlocksFromMessage = (message) => {
+  if (!isReportLikeMessage(message)) {
+    return undefined;
+  }
+
+  return splitReportSections(message)
+    .flatMap((section) => splitSlackText(section))
+    .slice(0, SLACK_MAX_BLOCKS)
+    .map((text) => ({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text,
+      },
+    }));
+};
+
+const buildNotificationText = (message) => {
+  const text = toSlackText(message);
+
+  if (!isReportLikeMessage(text)) {
+    return truncateSlackText(text, 260);
+  }
+
+  const firstLine =
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !/^#{1,6}\s+/.test(line) && !/^\*\*[^*\n]+\*\*$/.test(line)) ??
+    text;
+
+  return truncateSlackText(firstLine, 260);
+};
+
+const normalizeSlackTextObject = ({
+  textObject,
+  defaultType = 'mrkdwn',
+  maxLength = SLACK_SECTION_TEXT_LIMIT,
+}) => {
+  if (!textObject || typeof textObject !== 'object') {
+    return null;
+  }
+
+  const type = textObject.type === 'plain_text' ? 'plain_text' : defaultType;
+  const rawText =
+    type === 'plain_text' ? toSlackText(textObject.text) : normalizeSlackMrkdwn(textObject.text);
+  const text = truncateSlackText(rawText, maxLength);
+
+  if (text.length === 0) {
+    return null;
+  }
+
+  return {
+    type,
+    text,
+    ...(type === 'plain_text' && textObject.emoji !== undefined
+      ? { emoji: Boolean(textObject.emoji) }
+      : {}),
+  };
+};
+
+const normalizeSlackBlock = (block) => {
+  if (!block || typeof block !== 'object') {
+    return null;
+  }
+
+  if (block.type === 'divider') {
+    return { type: 'divider' };
+  }
+
+  if (block.type === 'header') {
+    const text = normalizeSlackTextObject({
+      textObject: block.text,
+      defaultType: 'plain_text',
+      maxLength: SLACK_HEADER_TEXT_LIMIT,
+    });
+
+    return text
+      ? {
+          type: 'header',
+          text: {
+            ...text,
+            type: 'plain_text',
+          },
+        }
+      : null;
+  }
+
+  if (block.type === 'context' && Array.isArray(block.elements)) {
+    const elements = block.elements
+      .map((element) =>
+        normalizeSlackTextObject({
+          textObject: element,
+          maxLength: SLACK_CONTEXT_TEXT_LIMIT,
+        }),
+      )
+      .filter(Boolean)
+      .slice(0, 10);
+
+    return elements.length > 0 ? { type: 'context', elements } : null;
+  }
+
+  if (block.type !== 'section') {
+    return null;
+  }
+
+  const text = normalizeSlackTextObject({
+    textObject: block.text,
+  });
+  const fields = Array.isArray(block.fields)
+    ? block.fields
+        .map((field) =>
+          normalizeSlackTextObject({
+            textObject: field,
+            maxLength: SLACK_FIELD_TEXT_LIMIT,
+          }),
+        )
+        .filter(Boolean)
+        .slice(0, 10)
+    : [];
+
+  if (!text && fields.length === 0) {
+    return null;
+  }
+
+  return {
+    type: 'section',
+    ...(text ? { text } : {}),
+    ...(fields.length > 0 ? { fields } : {}),
+  };
+};
+
+const normalizeSlackBlocks = (blocks) => {
+  if (!Array.isArray(blocks)) {
+    return undefined;
+  }
+
+  const normalized = blocks
+    .map(normalizeSlackBlock)
+    .filter(Boolean)
+    .slice(0, SLACK_MAX_BLOCKS);
+
+  return normalized.length > 0 ? normalized : undefined;
+};
+
+const normalizeDecisionReply = (decision, message) => {
+  const reply =
+    decision.reply && typeof decision.reply === 'object' ? decision.reply : {};
+  const text = toSlackText(
+    typeof reply.text === 'string' ? reply.text : buildNotificationText(message),
+    { singleLine: true },
+  );
+  const blocks =
+    normalizeSlackBlocks(reply.blocks) ??
+    normalizeSlackBlocks(decision.blocks) ??
+    buildSlackBlocksFromMessage(message);
+
+  return {
+    text:
+      text.length > 0
+        ? text
+        : toSlackText(buildNotificationText(message), { singleLine: true }),
+    ...(blocks && blocks.length > 0 ? { blocks } : {}),
+  };
+};
+
 const normalizeDecision = (decision) => {
   if (Array.isArray(decision) && decision.length === 1) {
     return normalizeDecision(decision[0]);
@@ -167,7 +472,18 @@ const normalizeDecision = (decision) => {
 
   if (decision.kind === 'final') {
     const mode = decision.mode ?? (decision.draft ? 'write_draft' : 'query');
-    const message = decision.message ?? decision.answer ?? '';
+    const replyText =
+      decision.reply &&
+      typeof decision.reply === 'object' &&
+      typeof decision.reply.text === 'string'
+        ? decision.reply.text
+        : '';
+    const message =
+      typeof decision.message === 'string'
+        ? decision.message
+        : typeof decision.answer === 'string'
+          ? decision.answer
+          : replyText;
 
     if (mode !== 'query' && mode !== 'write_draft' && mode !== 'applied') {
       throw new Error(`Unsupported Codex final mode: ${mode}`);
@@ -177,6 +493,7 @@ const normalizeDecision = (decision) => {
       kind: 'final',
       mode,
       message,
+      reply: normalizeDecisionReply(decision, message),
       draft:
         decision.draft && typeof decision.draft === 'object'
           ? decision.draft
@@ -252,6 +569,7 @@ export const buildCodexPrompt = ({
     'Policy:',
     '- Query/list/report requests must use at least one search-* tool before a final query answer.',
     '- When the user wants a broad list or report without explicit filters, call the relevant search-* tool with {"query": ""}.',
+    '- For broad CRM briefings, daily guides, priority reports, risk reports, or strategy questions, gather cross-source evidence before the final answer: search opportunities, licenses, and activities unless the user clearly narrowed the scope.',
     '- Lead registration requests such as "신규 리드 등록", "CRM에 등록", or "잠재고객 등록" must use create-lead-package and finish with mode="write_draft".',
     '- Create requests may execute create-record immediately. After execution, finish with mode="applied".',
     '- Update and delete requests must use update-record or delete-record to capture the exact target, then finish with mode="write_draft" for Slack approval.',
@@ -259,9 +577,13 @@ export const buildCodexPrompt = ({
     'Response style:',
     '- Always answer in Korean.',
     '- Lead with the conclusion in the first sentence.',
-    '- For analytical, strategy, briefing, summary, or recommendation requests, use short markdown sections and flat bullet lists.',
+    '- For analytical, strategy, briefing, summary, or recommendation requests, use a polished Twenty in-app chat style: a concise title when useful, executive summary, clear sections, compact fact rows, and action checklists.',
+    '- Prefer reply.blocks for substantive answers. Keep message/reply.text to a one-sentence notification summary, and put the readable report body in Slack Block Kit blocks.',
+    '- Slack formatting rules: use *bold*, bullet lines with "•", section fields for compact fact grids, divider blocks between major groups, and context blocks for timestamps or scope notes. Do not use GitHub pipe tables or # markdown headings because Slack does not render them well.',
+    '- A strong report normally has a short conclusion, prioritized items with dates/stages/amounts, evidence, next actions, and risks. Include only the parts that fit the user request and CRM evidence.',
+    '- Let the user request and tool results determine the structure, priority logic, and section names. Do not force a fixed report template or bias the answer toward any specific CRM object.',
     '- For simple follow-up questions, answer directly in one to three short bullets or short sentences. Do not force a full report.',
-    '- When relevant, prefer this order: 요약, 핵심 근거, 권장 전략, 실행 우선순위, 리스크.',
+    '- Use status labels such as 긴급, 높음, 중간, 낮음 when they are grounded by dates, stages, risks, or task state from tool results.',
     '- Keep paragraphs short. Avoid long prose blocks.',
     '- Use numbers, dates, stages, account names, partner names, renewal facts, and activity evidence from tool results.',
     '- Do not mention internal tools, prompts, skills, hidden policies, or system limitations.',
@@ -277,10 +599,38 @@ export const buildCodexPrompt = ({
         {
           kind: 'final',
           mode: 'query',
-          message: '<slack reply text>',
+          message: '<one-sentence Slack notification summary>',
+          reply: {
+            text: '<same one-sentence Slack notification summary>',
+            blocks: [
+              {
+                type: 'header',
+                text: {
+                  type: 'plain_text',
+                  text: '<short report title>',
+                },
+              },
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: '*요약*\\n• <grounded summary bullet>\\n• <grounded summary bullet>',
+                },
+              },
+              {
+                type: 'section',
+                fields: [
+                  {
+                    type: 'mrkdwn',
+                    text: '*<priority item>*\\n<date/stage/amount>\\n<why it matters>',
+                  },
+                ],
+              },
+            ],
+          },
           threadContextPatch: {
             assistantTurn: {
-              text: '<same slack reply text>',
+              text: '<same one-sentence Slack notification summary>',
               outcome: 'query',
             },
             summary: '<short updated thread summary>',
@@ -1357,12 +1707,11 @@ export const processSlackRequestWithCodex = async ({
       const threadContextPatch = normalizeThreadContextPatch(
         decision.threadContextPatch,
       );
+      const reply = decision.reply;
 
       await effectiveToolClient.callTool('save-query-answer', {
         slackRequestId,
-        reply: {
-          text: decision.message,
-        },
+        reply,
         resultJson: {
           aiDiagnostics: {
             provider: 'codex',
@@ -1376,13 +1725,13 @@ export const processSlackRequestWithCodex = async ({
       });
       await effectiveToolClient.callTool('post-slack-reply', {
         slackRequestId,
-        text: decision.message,
+        reply,
       });
 
       return {
         kind: 'query',
         slackRequestId,
-        answer: decision.message,
+        answer: reply.text,
       };
     }
 
@@ -1390,12 +1739,11 @@ export const processSlackRequestWithCodex = async ({
       const threadContextPatch = normalizeThreadContextPatch(
         decision.threadContextPatch,
       );
+      const reply = decision.reply;
 
       await effectiveToolClient.callTool(SAVE_APPLIED_RESULT_ENDPOINT, {
         slackRequestId,
-        reply: {
-          text: decision.message,
-        },
+        reply,
         resultJson: {
           aiDiagnostics: {
             provider: 'codex',
@@ -1410,13 +1758,13 @@ export const processSlackRequestWithCodex = async ({
       });
       await effectiveToolClient.callTool('post-slack-reply', {
         slackRequestId,
-        text: decision.message,
+        reply,
       });
 
       return {
         kind: 'applied',
         slackRequestId,
-        message: decision.message,
+        message: reply.text,
       };
     }
 

@@ -595,6 +595,38 @@ describe('dynamic object query reply', () => {
       coreQuery.mock.calls[1]?.[0]?.licenseRecords?.edges?.node?.vendorCompany,
     ).toMatchObject({ id: true, name: true });
     expect(coreQuery.mock.calls[1]?.[0]).not.toHaveProperty('licenses');
+    expect(synthesizeCrmQueryReplyWithDiagnostics).toHaveBeenCalledTimes(1);
+    expect(synthesizeCrmQueryReplyWithDiagnostics.mock.calls[0]?.[0]).toMatchObject({
+      classification: expect.objectContaining({
+        detailLevel: 'DETAILED',
+        queryCategory: 'LICENSE_PRIORITY',
+      }),
+      crmContext: expect.objectContaining({
+        reportMode: 'PRIORITY_REPORT',
+        count: 2,
+        timezone: expect.any(String),
+        generatedAt: expect.any(String),
+      }),
+    });
+
+    const synthesisRecords =
+      synthesizeCrmQueryReplyWithDiagnostics.mock.calls[0]?.[0]?.crmContext
+        ?.records as Array<{
+        id: string;
+        priorityScore: number;
+        priorityReasons: string[];
+        fields: Record<string, unknown>;
+      }>;
+
+    expect(synthesisRecords).toHaveLength(2);
+    expect(synthesisRecords[0]).toMatchObject({
+      id: 'license-1',
+      priorityScore: expect.any(Number),
+      priorityReasons: expect.any(Array),
+    });
+    expect(Object.keys(synthesisRecords[0].fields).length).toBeLessThanOrEqual(
+      8,
+    );
   });
 
   it('returns handled false when the text does not point at a queryable object', async () => {
